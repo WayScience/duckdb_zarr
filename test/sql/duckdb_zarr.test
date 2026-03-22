@@ -17,6 +17,13 @@ ORDER BY group_path;
 /	2	true
 stations	2	true
 
+query I
+SELECT COUNT(*)
+FROM zarr_groups('test/data/simple_v2.zarr')
+WHERE metadata_path LIKE '%/.zmetadata#%';
+----
+2
+
 query IIIIIIIII
 SELECT
     array_path,

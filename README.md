@@ -8,7 +8,7 @@ The current implementation follows the project documents conservatively:
 - `ARCHITECTURE.md`: build the store adapter, metadata parser, and DuckDB bridge first
 - `ROADMAP.md`: advance incrementally from metadata discovery to relational cell scans and planner-aware execution
 
-Today’s extension provides local-store metadata table functions:
+Today’s extension provides metadata and relational scan table functions for local stores and a constrained remote read path:
 
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
@@ -22,6 +22,8 @@ This gives a usable SQL entrypoint for understanding a Zarr store and projecting
 The MVP currently supports:
 
 - Local filesystem Zarr v2 discovery
+- Zarr v2 consolidated metadata discovery from `.zmetadata`
+- Remote `http://`, `https://`, and `s3://` stores when DuckDB `httpfs` is available and the store is consolidated
 - Group enumeration from `.zgroup`
 - Array enumeration from `.zarray`
 - Chunk enumeration for both `.` and `/` dimension separators
@@ -38,7 +40,7 @@ The MVP does not yet support:
 
 - Blosc chunk decode
 - Missing-chunk fill-value materialization
-- Remote stores
+- Non-consolidated remote store discovery
 - Zarr v3 metadata
 - Arrow materialization
 
@@ -62,6 +64,16 @@ Run the extension tests:
 make test_metadata
 ```
 
+Package a static extension repository layout from downloaded CI artifacts:
+
+```sh
+python3 scripts/package_extension_repository.py \
+  --artifacts-dir build/distribution-artifacts \
+  --out-dir build/extension-repository \
+  --extension-name duckdb_zarr \
+  --duckdb-version v1.5.0
+```
+
 Open the DuckDB shell with the extension linked in:
 
 ```sh
@@ -75,6 +87,38 @@ SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
 SELECT * FROM zarr_arrays('test/data/simple_v2.zarr');
 SELECT * FROM zarr_chunks('test/data/simple_v2.zarr');
 SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
+```
+
+For remote stores in this phase, the practical contract is:
+
+- the store must expose Zarr v2 consolidated metadata at `.zmetadata`
+- DuckDB must have `httpfs` available for the URI scheme you use
+- chunk data are still read directly from remote chunk object paths
+
+## Install Like An Extension
+
+This repo now includes a GitHub Pages publishing workflow in
+[`PublishExtensionRepository.yml`](/Users/buntend/Documents/work/duckdb_zarr/.github/workflows/PublishExtensionRepository.yml)
+that packages CI build artifacts into DuckDB's static extension repository layout.
+
+To make this work for your repository:
+
+- enable GitHub Pages in the repository settings
+- push a version tag such as `v0.1.0`
+- let the publish workflow build binaries and deploy the static repository
+
+Then users can point DuckDB at that repository URL:
+
+```sql
+SET custom_extension_repository='https://<owner>.github.io/<repo>';
+INSTALL duckdb_zarr;
+LOAD duckdb_zarr;
+```
+
+If the published repository is hosted at the root of the GitHub Pages site, DuckDB will resolve binaries under paths like:
+
+```text
+https://<owner>.github.io/<repo>/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
 ```
 
 ## Developer Workflow
@@ -91,12 +135,14 @@ Useful build outputs:
 - `./build/release/duckdb`
 - `./build/release/test/unittest`
 - `./build/release/extension/duckdb_zarr/duckdb_zarr.duckdb_extension`
+- `./build/extension-repository/<duckdb-version>/<platform>/duckdb_zarr.duckdb_extension.gz`
 
 ## Architecture Mapping
 
 The current code maps directly to the architecture document:
 
 - Store Adapter: local filesystem traversal through DuckDB’s `FileSystem`
+- Store Adapter: consolidated remote discovery for `http://`, `https://`, and `s3://` paths through DuckDB filesystem routing
 - Metadata Parser: `.zgroup` and `.zarray` parsing via `yyjson`
 - DuckDB Bridge: table functions registered from the extension entrypoint
 - Relational Cell Scan: `zarr_cells()` with pushed filters, projection-aware output, and dimension-based chunk pruning
@@ -118,7 +164,7 @@ The current `zarr_cells()` path now streams chunk-by-chunk at execution time, bu
 
 ## Dependency Notes
 
-No new third-party runtime dependencies were needed for the current implementation beyond what is already vendored in DuckDB.
+No new third-party runtime dependencies were added in this repo. For remote access, `duckdb_zarr` relies on DuckDB’s `httpfs` extension being available to the runtime.
 
 For the next phase, useful dependency choices will likely be:
 
@@ -126,4 +172,4 @@ For the next phase, useful dependency choices will likely be:
 - blosc decode support for chunk payloads
 - Arrow integration once `zarr_cells()` starts producing typed batches
 
-If you want me to take on the next phase, the highest-value dependency discussion is around broader codec support and remote-store access. In practice that likely means deciding on Blosc support first, then choosing how much of the execution path should stay purely native C++ versus moving closer to an Arrow-oriented bridge for larger scans.
+If you want me to take on the next phase, the highest-value dependency discussion is now around broader codec support, especially Blosc, and whether remote execution should grow from the current consolidated-metadata path into fuller object-store discovery plus caching.

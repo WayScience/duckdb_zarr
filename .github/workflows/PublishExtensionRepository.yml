@@ -1,0 +1,63 @@
+name: Publish Extension Repository
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: extension-pages
+  cancel-in-progress: false
+
+jobs:
+  build-extension-binaries:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
+    with:
+      duckdb_version: v1.5.0
+      ci_tools_version: v1.5.0
+      extension_name: duckdb_zarr
+
+  package-repository:
+    name: Package static extension repository
+    runs-on: ubuntu-latest
+    needs: build-extension-binaries
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: duckdb_zarr-v1.5.0-extension-*
+          path: build/distribution-artifacts
+          merge-multiple: false
+
+      - name: Package repository layout
+        run: |
+          python3 scripts/package_extension_repository.py \
+            --artifacts-dir build/distribution-artifacts \
+            --out-dir build/extension-repository \
+            --extension-name duckdb_zarr \
+            --duckdb-version v1.5.0
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/extension-repository
+
+  deploy-pages:
+    name: Deploy extension repository
+    runs-on: ubuntu-latest
+    needs: package-repository
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

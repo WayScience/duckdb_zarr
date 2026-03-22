@@ -5,6 +5,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/main/extension_helper.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
@@ -94,6 +95,11 @@ struct ZarrCellsGlobalState : public GlobalTableFunctionState {
 	idx_t current_linear_index = 0;
 	vector<char> decoded_chunk;
 };
+
+static ZarrGroupEntry ParseGroupMetadata(yyjson_val *root, const string &store_path, const string &relative_path,
+                                         const string &metadata_path);
+static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &store_path, const string &relative_path,
+                                               const string &metadata_path);
 
 static string JoinNodePath(const string &base, const string &name) {
 	if (base.empty()) {
@@ -202,6 +208,13 @@ static string NormalizeArrayPath(const string &path) {
 		end--;
 	}
 	return path.substr(start, end - start);
+}
+
+static string NormalizeStorePath(FileSystem &fs, const string &path) {
+	if (FileSystem::IsRemoteFile(path)) {
+		return path;
+	}
+	return fs.ExpandPath(path);
 }
 
 static idx_t Product(const vector<int64_t> &values) {
@@ -727,27 +740,7 @@ static ZarrArrayEntry ParseArrayMetadata(FileSystem &fs, const string &store_pat
 	if (!doc) {
 		throw InvalidInputException("Failed to parse %s", metadata_path);
 	}
-	auto root = yyjson_doc_get_root(doc.get());
-	if (!yyjson_is_obj(root)) {
-		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
-	}
-
-	auto compressor = JsonToString(yyjson_obj_get(root, "compressor"));
-	auto dimension_separator = OptionalString(root, "dimension_separator", ".");
-	auto shape = RequireInt64Array(root, "shape");
-	auto chunks = RequireInt64Array(root, "chunks");
-
-	return {store_path,
-	        relative_path,
-	        RequireInt64(root, "zarr_format"),
-	        NumericCast<int64_t>(shape.size()),
-	        std::move(shape),
-	        std::move(chunks),
-	        OptionalString(root, "dtype"),
-	        OptionalString(root, "order"),
-	        std::move(compressor),
-	        std::move(dimension_separator),
-	        metadata_path};
+	return ParseArrayMetadataObject(yyjson_doc_get_root(doc.get()), store_path, relative_path, metadata_path);
 }
 
 static void TraverseStore(FileSystem &fs, const string &store_path, const string &dir_path, const string &relative_path,
@@ -763,11 +756,7 @@ static void TraverseStore(FileSystem &fs, const string &store_path, const string
 		if (!doc) {
 			throw InvalidInputException("Failed to parse %s", group_metadata);
 		}
-		auto root = yyjson_doc_get_root(doc.get());
-		if (!yyjson_is_obj(root)) {
-			throw InvalidInputException("%s does not contain a JSON object", group_metadata);
-		}
-		groups.push_back({store_path, FormatGroupPath(relative_path), RequireInt64(root, "zarr_format"), group_metadata});
+		groups.push_back(ParseGroupMetadata(yyjson_doc_get_root(doc.get()), store_path, relative_path, group_metadata));
 	}
 
 	if (fs.FileExists(array_metadata)) {
@@ -802,16 +791,169 @@ static vector<Value> ToBigIntValues(const vector<int64_t> &values) {
 	return result;
 }
 
+static ZarrGroupEntry ParseGroupMetadata(yyjson_val *root, const string &store_path, const string &relative_path,
+                                         const string &metadata_path) {
+	if (!yyjson_is_obj(root)) {
+		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
+	}
+	return {store_path, FormatGroupPath(relative_path), RequireInt64(root, "zarr_format"), metadata_path};
+}
+
+static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &store_path, const string &relative_path,
+                                               const string &metadata_path) {
+	if (!yyjson_is_obj(root)) {
+		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
+	}
+	auto compressor = JsonToString(yyjson_obj_get(root, "compressor"));
+	auto dimension_separator = OptionalString(root, "dimension_separator", ".");
+	auto shape = RequireInt64Array(root, "shape");
+	auto chunks = RequireInt64Array(root, "chunks");
+
+	return {store_path,
+	        relative_path,
+	        RequireInt64(root, "zarr_format"),
+	        NumericCast<int64_t>(shape.size()),
+	        std::move(shape),
+	        std::move(chunks),
+	        OptionalString(root, "dtype"),
+	        OptionalString(root, "order"),
+	        std::move(compressor),
+	        std::move(dimension_separator),
+	        metadata_path};
+}
+
+static string MetadataPathForKey(const string &store_path, const string &key) {
+	return store_path + "/.zmetadata#" + key;
+}
+
+static string RelativePathFromMetadataKey(const string &key, const string &suffix) {
+	if (key == suffix) {
+		return "";
+	}
+	auto key_suffix = "/" + suffix;
+	if (!StringUtil::EndsWith(key, key_suffix)) {
+		throw InvalidInputException("Unexpected consolidated metadata key: %s", key);
+	}
+	return key.substr(0, key.size() - key_suffix.size());
+}
+
+static string ChunkKeyFromCoords(const vector<int64_t> &coords, const string &dimension_separator) {
+	string separator = dimension_separator == "/" ? "/" : ".";
+	string result;
+	for (idx_t i = 0; i < coords.size(); i++) {
+		if (i > 0) {
+			result += separator;
+		}
+		result += std::to_string(coords[i]);
+	}
+	return result;
+}
+
+static string ChunkPath(const string &store_path, const string &array_path, const string &chunk_key) {
+	auto path = store_path;
+	if (!array_path.empty()) {
+		path += "/" + array_path;
+	}
+	if (!chunk_key.empty()) {
+		path += "/" + chunk_key;
+	}
+	return path;
+}
+
+static void GenerateChunkEntriesRecursive(FileSystem &fs, const string &store_path, const ZarrArrayEntry &array,
+                                          vector<int64_t> &coords, idx_t dim, vector<ZarrChunkEntry> &chunks) {
+	if (dim == coords.size()) {
+		auto chunk_key = ChunkKeyFromCoords(coords, array.dimension_separator);
+		auto file_path = ChunkPath(store_path, array.array_path, chunk_key);
+		if (!fs.FileExists(file_path)) {
+			return;
+		}
+		auto handle = fs.OpenFile(file_path, FileFlags::FILE_FLAGS_READ);
+		chunks.push_back(
+		    {store_path, array.array_path, chunk_key, coords, file_path, NumericCast<int64_t>(handle->GetFileSize())});
+		return;
+	}
+	auto chunk_count = (array.shape[dim] + array.chunks[dim] - 1) / array.chunks[dim];
+	for (int64_t chunk_coord = 0; chunk_coord < chunk_count; chunk_coord++) {
+		coords[dim] = chunk_coord;
+		GenerateChunkEntriesRecursive(fs, store_path, array, coords, dim + 1, chunks);
+	}
+}
+
+static vector<ZarrChunkEntry> GenerateChunkEntries(FileSystem &fs, const string &store_path, const ZarrArrayEntry &array) {
+	vector<ZarrChunkEntry> chunks;
+	vector<int64_t> coords(NumericCast<idx_t>(array.rank), 0);
+	GenerateChunkEntriesRecursive(fs, store_path, array, coords, 0, chunks);
+	return chunks;
+}
+
+static bool DiscoverConsolidatedStore(FileSystem &fs, const string &store_path, vector<ZarrGroupEntry> &groups,
+                                      vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks) {
+	auto metadata_path = store_path + "/.zmetadata";
+	if (!fs.FileExists(metadata_path)) {
+		return false;
+	}
+	auto metadata_text = ReadTextFile(fs, metadata_path);
+	unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)> doc(yyjson_read(metadata_text.c_str(), metadata_text.size(), 0),
+	                                                       yyjson_doc_free);
+	if (!doc) {
+		throw InvalidInputException("Failed to parse %s", metadata_path);
+	}
+	auto root = yyjson_doc_get_root(doc.get());
+	if (!yyjson_is_obj(root)) {
+		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
+	}
+	auto metadata_obj = RequireObjectKey(root, "metadata");
+	if (!yyjson_is_obj(metadata_obj)) {
+		throw InvalidInputException("%s metadata key is not an object", metadata_path);
+	}
+	yyjson_obj_iter iter = yyjson_obj_iter_with(metadata_obj);
+	yyjson_val *entry_key;
+	while ((entry_key = yyjson_obj_iter_next(&iter))) {
+		auto entry_value = yyjson_obj_iter_get_val(entry_key);
+		string key(unsafe_yyjson_get_str(entry_key), unsafe_yyjson_get_len(entry_key));
+		if (StringUtil::EndsWith(key, ".zgroup")) {
+			auto relative_path = RelativePathFromMetadataKey(key, ".zgroup");
+			groups.push_back(ParseGroupMetadata(entry_value, store_path, relative_path, MetadataPathForKey(store_path, key)));
+		} else if (StringUtil::EndsWith(key, ".zarray")) {
+			auto relative_path = RelativePathFromMetadataKey(key, ".zarray");
+			auto array =
+			    ParseArrayMetadataObject(entry_value, store_path, relative_path, MetadataPathForKey(store_path, key));
+			auto array_chunks = GenerateChunkEntries(fs, store_path, array);
+			chunks.insert(chunks.end(), array_chunks.begin(), array_chunks.end());
+			arrays.push_back(std::move(array));
+		}
+	}
+	return true;
+}
+
+static void EnsureRemoteFilesystemSupport(ClientContext &context, const string &path) {
+	if (!FileSystem::IsRemoteFile(path)) {
+		return;
+	}
+	if (!ExtensionHelper::TryAutoLoadExtension(context, "httpfs")) {
+		throw InvalidInputException(
+		    "Remote Zarr access requires DuckDB's httpfs extension to be available for path: %s", path);
+	}
+}
+
 static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const string &path) {
 	FileSystem &fs = FileSystem::GetFileSystem(context);
-	auto store_path = fs.ExpandPath(path);
-	if (!fs.DirectoryExists(store_path)) {
-		throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
-	}
+	EnsureRemoteFilesystemSupport(context, path);
+	auto store_path = NormalizeStorePath(fs, path);
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
-	TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
+	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks)) {
+		if (!fs.DirectoryExists(store_path)) {
+			if (FileSystem::IsRemoteFile(path)) {
+				throw InvalidInputException(
+				    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+			}
+			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
+		}
+		TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
+	}
 	std::sort(groups.begin(), groups.end(), [](const ZarrGroupEntry &lhs, const ZarrGroupEntry &rhs) {
 		return std::tie(lhs.group_path, lhs.metadata_path) < std::tie(rhs.group_path, rhs.metadata_path);
 	});
@@ -821,11 +963,18 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 static void DiscoverStore(ClientContext &context, const string &path, vector<ZarrGroupEntry> &groups,
                           vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks) {
 	FileSystem &fs = FileSystem::GetFileSystem(context);
-	auto store_path = fs.ExpandPath(path);
-	if (!fs.DirectoryExists(store_path)) {
-		throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
+	EnsureRemoteFilesystemSupport(context, path);
+	auto store_path = NormalizeStorePath(fs, path);
+	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks)) {
+		if (!fs.DirectoryExists(store_path)) {
+			if (FileSystem::IsRemoteFile(path)) {
+				throw InvalidInputException(
+				    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+			}
+			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
+		}
+		TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
 	}
-	TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
 	std::sort(groups.begin(), groups.end(), [](const ZarrGroupEntry &lhs, const ZarrGroupEntry &rhs) {
 		return std::tie(lhs.group_path, lhs.metadata_path) < std::tie(rhs.group_path, rhs.metadata_path);
 	});
