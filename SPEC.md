@@ -39,7 +39,7 @@ Zarr → decode → Arrow → DuckDB
 ## MVP Scope
 - Dense arrays
 - Numeric types
-- Basic codecs (gzip, blosc)
+- Basic codecs (gzip; blosc planned / not yet implemented)
 - Local + remote (later)
 
 ## Future
