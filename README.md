@@ -117,7 +117,7 @@ For remote stores in this phase, the practical contract is:
 ## Install Like An Extension
 
 This repo now includes a GitHub Pages publishing workflow in
-[`PublishExtensionRepository.yml`](/Users/buntend/Documents/work/duckdb_zarr/.github/workflows/PublishExtensionRepository.yml)
+[`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
 that packages CI build artifacts into DuckDB's static extension repository layout.
 
 To make this work for your repository:
@@ -183,10 +183,10 @@ The current `zarr_cells()` path now streams chunk-by-chunk at execution time, bu
 
 ## Code Layout
 
-- [`src/duckdb_zarr_extension.cpp`](/Users/buntend/Documents/work/duckdb_zarr/src/duckdb_zarr_extension.cpp): extension entrypoint and function registration
-- [`src/zarr_metadata.cpp`](/Users/buntend/Documents/work/duckdb_zarr/src/zarr_metadata.cpp): metadata discovery and table function implementations
-- [`scripts/create_sample_zarr.py`](/Users/buntend/Documents/work/duckdb_zarr/scripts/create_sample_zarr.py): reproducible fixture generation
-- [`test/sql/duckdb_zarr.test`](/Users/buntend/Documents/work/duckdb_zarr/test/sql/duckdb_zarr.test): SQLLogic coverage for metadata, cell projection, and pushed-filter behavior
+- [`src/duckdb_zarr_extension.cpp`](./src/duckdb_zarr_extension.cpp): extension entrypoint and function registration
+- [`src/zarr_metadata.cpp`](./src/zarr_metadata.cpp): metadata discovery and table function implementations
+- [`scripts/create_sample_zarr.py`](./scripts/create_sample_zarr.py): reproducible fixture generation
+- [`test/sql/duckdb_zarr.test`](./test/sql/duckdb_zarr.test): SQLLogic coverage for metadata, cell projection, and pushed-filter behavior
 
 ## Dependency Notes
 

@@ -74,10 +74,8 @@ struct ZarrGlobalState : public GlobalTableFunctionState {
 
 struct ZarrCellsBindData : public TableFunctionData {
 	ZarrCellsBindData(string store_path_p, ZarrArrayEntry array_p, vector<ZarrChunkEntry> chunks_p)
-	    : store_path(std::move(store_path_p)), array(std::move(array_p)), chunks(std::move(chunks_p)) {
+	    : array(std::move(array_p)), chunks(std::move(chunks_p)) {
 	}
-
-	string store_path;
 	ZarrArrayEntry array;
 	vector<ZarrChunkEntry> chunks;
 };

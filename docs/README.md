@@ -2,9 +2,9 @@
 
 The active project documentation lives in the repository root:
 
-- [`README.md`](/Users/buntend/Documents/work/duckdb_zarr/README.md)
-- [`SPEC.md`](/Users/buntend/Documents/work/duckdb_zarr/SPEC.md)
-- [`ARCHITECTURE.md`](/Users/buntend/Documents/work/duckdb_zarr/ARCHITECTURE.md)
-- [`ROADMAP.md`](/Users/buntend/Documents/work/duckdb_zarr/ROADMAP.md)
+- [`README.md`](../README.md)
+- [`SPEC.md`](../SPEC.md)
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md)
+- [`ROADMAP.md`](../ROADMAP.md)
 
 Keep this directory for supplemental notes only.
