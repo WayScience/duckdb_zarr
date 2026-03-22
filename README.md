@@ -31,6 +31,7 @@ The MVP currently supports:
 - Projection-aware `zarr_cells()` scans
 - Filter pushdown on dimension and value columns
 - Chunk pruning from dimension filters before chunk decode
+- Chunk-streamed execution with bounded scan-time memory instead of init-time row buffering
 - Developer fixture generation and SQLLogic tests
 
 The MVP does not yet support:
@@ -100,13 +101,13 @@ The current code maps directly to the architecture document:
 - DuckDB Bridge: table functions registered from the extension entrypoint
 - Relational Cell Scan: `zarr_cells()` with pushed filters, projection-aware output, and dimension-based chunk pruning
 
-The current `zarr_cells()` path is scan-oriented at the DuckDB table-function boundary, but there is still room to improve execution internals. The next major implementation step is to replace the current init-time row buffering with chunk-streamed execution backed by:
+The current `zarr_cells()` path now streams chunk-by-chunk at execution time, but there is still room to improve execution internals. The next major implementation step is to tighten the scan loop further with:
 
 1. chunk-file reads
 2. codec decode
 3. typed value materialization
 4. row projection `(dim_0, ..., value)`
-5. planner-aware batching and tighter memory control
+5. Arrow-oriented batching and broader codec support
 
 ## Code Layout
 
@@ -125,4 +126,4 @@ For the next phase, useful dependency choices will likely be:
 - blosc decode support for chunk payloads
 - Arrow integration once `zarr_cells()` starts producing typed batches
 
-If you want me to take on the next phase, the highest-value dependency discussion is around broader codec support, especially Blosc. That decision will shape whether we stay purely native C++, add a focused compression dependency, or move closer to an Arrow-oriented execution path.
+If you want me to take on the next phase, the highest-value dependency discussion is around broader codec support and remote-store access. In practice that likely means deciding on Blosc support first, then choosing how much of the execution path should stay purely native C++ versus moving closer to an Arrow-oriented bridge for larger scans.

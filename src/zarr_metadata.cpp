@@ -59,11 +59,6 @@ struct ZarrNumericType {
 	bool little_endian;
 };
 
-struct ZarrCellRow {
-	vector<int64_t> coordinates;
-	Value value;
-};
-
 template <class ENTRY>
 struct ZarrBindData : public TableFunctionData {
 	explicit ZarrBindData(vector<ENTRY> entries_p) : entries(std::move(entries_p)) {
@@ -87,10 +82,17 @@ struct ZarrCellsBindData : public TableFunctionData {
 };
 
 struct ZarrCellsGlobalState : public GlobalTableFunctionState {
-	vector<ZarrCellRow> rows;
 	vector<column_t> column_ids;
 	vector<idx_t> projection_ids;
-	idx_t offset = 0;
+	unique_ptr<TableFilterSet> filters;
+	vector<idx_t> chunk_indexes;
+	ZarrNumericType dtype;
+	idx_t chunk_element_count = 0;
+	idx_t expected_chunk_bytes = 0;
+	idx_t next_chunk_offset = 0;
+	idx_t current_chunk_index = DConstants::INVALID_INDEX;
+	idx_t current_linear_index = 0;
+	vector<char> decoded_chunk;
 };
 
 static string JoinNodePath(const string &base, const string &name) {
@@ -425,42 +427,6 @@ static const ZarrArrayEntry &FindArrayEntry(const vector<ZarrArrayEntry> &arrays
 	throw InvalidInputException("Zarr array \"%s\" was not found in the store", array_path);
 }
 
-static vector<ZarrCellRow> MaterializeCells(FileSystem &fs, const ZarrArrayEntry &array,
-                                            const vector<ZarrChunkEntry> &all_chunks) {
-	auto dtype = ParseNumericDType(array.dtype);
-	auto chunk_element_count = Product(array.chunks);
-	auto expected_chunk_bytes = chunk_element_count * dtype.element_size;
-	vector<ZarrCellRow> rows;
-	rows.reserve(Product(array.shape));
-
-	for (idx_t chunk_idx = 0; chunk_idx < all_chunks.size(); chunk_idx++) {
-		auto &chunk = all_chunks[chunk_idx];
-		if (chunk.array_path != array.array_path) {
-			continue;
-		}
-		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
-		auto decoded = DecompressChunk(raw_data, array.compressor, expected_chunk_bytes);
-		for (idx_t linear_index = 0; linear_index < chunk_element_count; linear_index++) {
-			auto local_coords = LinearToCoords(linear_index, array.chunks, array.order);
-			vector<int64_t> global_coords(local_coords.size(), 0);
-			bool in_bounds = true;
-			for (idx_t dim = 0; dim < local_coords.size(); dim++) {
-				global_coords[dim] = chunk.chunk_coords[dim] * array.chunks[dim] + local_coords[dim];
-				if (global_coords[dim] >= array.shape[dim]) {
-					in_bounds = false;
-					break;
-				}
-			}
-			if (!in_bounds) {
-				continue;
-			}
-			auto value_ptr = decoded.data() + (linear_index * dtype.element_size);
-			rows.push_back({std::move(global_coords), DecodeNumericValue(value_ptr, dtype)});
-		}
-	}
-	return rows;
-}
-
 static bool MatchesFilter(const TableFilter &filter, const Value &value) {
 	switch (filter.filter_type) {
 	case TableFilterType::CONSTANT_COMPARISON:
@@ -617,16 +583,9 @@ static bool ChunkMatchesFilters(optional_ptr<TableFilterSet> filters, const vect
 	return true;
 }
 
-static vector<ZarrCellRow> MaterializeFilteredCells(FileSystem &fs, const ZarrArrayEntry &array,
-                                                    const vector<ZarrChunkEntry> &all_chunks,
-                                                    optional_ptr<TableFilterSet> filters,
-                                                    const vector<column_t> &column_ids) {
-	auto dtype = ParseNumericDType(array.dtype);
-	auto chunk_element_count = Product(array.chunks);
-	auto expected_chunk_bytes = chunk_element_count * dtype.element_size;
-	vector<ZarrCellRow> rows;
-	rows.reserve(Product(array.shape));
-
+static vector<idx_t> SelectFilteredChunks(const ZarrArrayEntry &array, const vector<ZarrChunkEntry> &all_chunks,
+                                          optional_ptr<TableFilterSet> filters, const vector<column_t> &column_ids) {
+	vector<idx_t> chunk_indexes;
 	for (idx_t chunk_idx = 0; chunk_idx < all_chunks.size(); chunk_idx++) {
 		auto &chunk = all_chunks[chunk_idx];
 		if (chunk.array_path != array.array_path) {
@@ -635,31 +594,56 @@ static vector<ZarrCellRow> MaterializeFilteredCells(FileSystem &fs, const ZarrAr
 		if (!ChunkMatchesFilters(filters, column_ids, array, chunk)) {
 			continue;
 		}
-		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
-		auto decoded = DecompressChunk(raw_data, array.compressor, expected_chunk_bytes);
-		for (idx_t linear_index = 0; linear_index < chunk_element_count; linear_index++) {
-			auto local_coords = LinearToCoords(linear_index, array.chunks, array.order);
-			vector<int64_t> global_coords(local_coords.size(), 0);
-			bool in_bounds = true;
-			for (idx_t dim = 0; dim < local_coords.size(); dim++) {
-				global_coords[dim] = chunk.chunk_coords[dim] * array.chunks[dim] + local_coords[dim];
-				if (global_coords[dim] >= array.shape[dim]) {
-					in_bounds = false;
-					break;
-				}
-			}
-			if (!in_bounds) {
-				continue;
-			}
-			auto value_ptr = decoded.data() + (linear_index * dtype.element_size);
-			auto cell_value = DecodeNumericValue(value_ptr, dtype);
-			if (!RowMatchesFilters(filters, column_ids, global_coords, cell_value, NumericCast<idx_t>(array.rank))) {
-				continue;
-			}
-			rows.push_back({std::move(global_coords), std::move(cell_value)});
+		chunk_indexes.push_back(chunk_idx);
+	}
+	return chunk_indexes;
+}
+
+static bool ComputeGlobalCoords(idx_t linear_index, const ZarrArrayEntry &array, const ZarrChunkEntry &chunk,
+                                vector<int64_t> &global_coords) {
+	auto local_coords = LinearToCoords(linear_index, array.chunks, array.order);
+	global_coords.assign(local_coords.size(), 0);
+	for (idx_t dim = 0; dim < local_coords.size(); dim++) {
+		global_coords[dim] = chunk.chunk_coords[dim] * array.chunks[dim] + local_coords[dim];
+		if (global_coords[dim] >= array.shape[dim]) {
+			return false;
 		}
 	}
-	return rows;
+	return true;
+}
+
+static idx_t GetOutputColumnCount(const ZarrCellsGlobalState &state) {
+	return state.projection_ids.empty() ? state.column_ids.size() : state.projection_ids.size();
+}
+
+static void WriteCellToOutput(const ZarrCellsBindData &bind_data, const ZarrCellsGlobalState &state,
+                              const vector<int64_t> &coordinates, const Value &value, DataChunk &output, idx_t row_idx) {
+	auto output_column_count = GetOutputColumnCount(state);
+	for (idx_t col = 0; col < output_column_count; col++) {
+		auto base_col = state.projection_ids.empty() ? col : state.projection_ids[col];
+		auto actual_col = state.column_ids[base_col];
+		if (actual_col < bind_data.array.rank) {
+			output.SetValue(col, row_idx, Value::BIGINT(coordinates[actual_col]));
+		} else if (actual_col == bind_data.array.rank) {
+			output.SetValue(col, row_idx, value);
+		} else {
+			throw InternalException("Unexpected zarr_cells column index");
+		}
+	}
+}
+
+static bool LoadNextChunk(FileSystem &fs, const ZarrCellsBindData &bind_data, ZarrCellsGlobalState &state) {
+	while (state.next_chunk_offset < state.chunk_indexes.size()) {
+		state.current_chunk_index = state.chunk_indexes[state.next_chunk_offset++];
+		state.current_linear_index = 0;
+		auto &chunk = bind_data.chunks[state.current_chunk_index];
+		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
+		state.decoded_chunk = DecompressChunk(raw_data, bind_data.array.compressor, state.expected_chunk_bytes);
+		return true;
+	}
+	state.current_chunk_index = DConstants::INVALID_INDEX;
+	state.decoded_chunk.clear();
+	return false;
 }
 
 static bool TryParseInteger(const string &text, int64_t &value) {
@@ -996,25 +980,34 @@ static void ScanChunks(ClientContext &, TableFunctionInput &data_p, DataChunk &o
 	output.SetCardinality(count);
 }
 
-static void ScanCells(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
+static void ScanCells(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &state = data_p.global_state->Cast<ZarrCellsGlobalState>();
 	auto &bind_data = data_p.bind_data->Cast<ZarrCellsBindData>();
-	auto output_column_count = state.projection_ids.empty() ? state.column_ids.size() : state.projection_ids.size();
+	FileSystem &fs = FileSystem::GetFileSystem(context);
 	idx_t count = 0;
-	while (state.offset < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
-		auto &row = state.rows[state.offset++];
-		for (idx_t col = 0; col < output_column_count; col++) {
-			auto base_col = state.projection_ids.empty() ? col : state.projection_ids[col];
-			auto actual_col = state.column_ids[base_col];
-			if (actual_col < bind_data.array.rank) {
-				output.SetValue(col, count, Value::BIGINT(row.coordinates[actual_col]));
-			} else if (actual_col == bind_data.array.rank) {
-				output.SetValue(col, count, row.value);
-			} else {
-				throw InternalException("Unexpected zarr_cells column index");
+	vector<int64_t> global_coords;
+	while (count < STANDARD_VECTOR_SIZE) {
+		if (state.current_chunk_index == DConstants::INVALID_INDEX ||
+		    state.current_linear_index >= state.chunk_element_count) {
+			if (!LoadNextChunk(fs, bind_data, state)) {
+				break;
 			}
 		}
-		count++;
+		auto &chunk = bind_data.chunks[state.current_chunk_index];
+		while (state.current_linear_index < state.chunk_element_count && count < STANDARD_VECTOR_SIZE) {
+			auto linear_index = state.current_linear_index++;
+			if (!ComputeGlobalCoords(linear_index, bind_data.array, chunk, global_coords)) {
+				continue;
+			}
+			auto value_ptr = state.decoded_chunk.data() + (linear_index * state.dtype.element_size);
+			auto cell_value = DecodeNumericValue(value_ptr, state.dtype);
+			if (!RowMatchesFilters(state.filters.get(), state.column_ids, global_coords, cell_value,
+			                       NumericCast<idx_t>(bind_data.array.rank))) {
+				continue;
+			}
+			WriteCellToOutput(bind_data, state, global_coords, cell_value, output, count);
+			count++;
+		}
 	}
 	output.SetCardinality(count);
 }
@@ -1022,10 +1015,13 @@ static void ScanCells(ClientContext &, TableFunctionInput &data_p, DataChunk &ou
 static unique_ptr<GlobalTableFunctionState> InitCells(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<ZarrCellsBindData>();
 	auto result = make_uniq<ZarrCellsGlobalState>();
-	FileSystem &fs = FileSystem::GetFileSystem(context);
 	result->column_ids = input.column_ids;
 	result->projection_ids = input.projection_ids;
-	result->rows = MaterializeFilteredCells(fs, bind_data.array, bind_data.chunks, input.filters, input.column_ids);
+	result->filters = input.filters ? input.filters->Copy() : nullptr;
+	result->chunk_indexes = SelectFilteredChunks(bind_data.array, bind_data.chunks, input.filters, input.column_ids);
+	result->dtype = ParseNumericDType(bind_data.array.dtype);
+	result->chunk_element_count = Product(bind_data.array.chunks);
+	result->expected_chunk_bytes = result->chunk_element_count * result->dtype.element_size;
 	return std::move(result);
 }
 
