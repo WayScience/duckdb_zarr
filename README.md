@@ -117,7 +117,7 @@ For remote stores in this phase, the practical contract is:
 ## Install Like An Extension
 
 This repo now includes a GitHub Pages publishing workflow in
-[`PublishExtensionRepository.yml`](/Users/buntend/Documents/work/duckdb_zarr/.github/workflows/PublishExtensionRepository.yml)
+[`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
 that packages CI build artifacts into DuckDB's static extension repository layout.
 
 To make this work for your repository:
