@@ -5,6 +5,10 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/null_filter.hpp"
 #include "miniz_wrapper.hpp"
 #include "yyjson.hpp"
 
@@ -73,11 +77,20 @@ struct ZarrGlobalState : public GlobalTableFunctionState {
 };
 
 struct ZarrCellsBindData : public TableFunctionData {
-	ZarrCellsBindData(idx_t rank_p, vector<ZarrCellRow> rows_p) : rank(rank_p), rows(std::move(rows_p)) {
+	ZarrCellsBindData(string store_path_p, ZarrArrayEntry array_p, vector<ZarrChunkEntry> chunks_p)
+	    : store_path(std::move(store_path_p)), array(std::move(array_p)), chunks(std::move(chunks_p)) {
 	}
 
-	idx_t rank;
+	string store_path;
+	ZarrArrayEntry array;
+	vector<ZarrChunkEntry> chunks;
+};
+
+struct ZarrCellsGlobalState : public GlobalTableFunctionState {
 	vector<ZarrCellRow> rows;
+	vector<column_t> column_ids;
+	vector<idx_t> projection_ids;
+	idx_t offset = 0;
 };
 
 static string JoinNodePath(const string &base, const string &name) {
@@ -448,6 +461,207 @@ static vector<ZarrCellRow> MaterializeCells(FileSystem &fs, const ZarrArrayEntry
 	return rows;
 }
 
+static bool MatchesFilter(const TableFilter &filter, const Value &value) {
+	switch (filter.filter_type) {
+	case TableFilterType::CONSTANT_COMPARISON:
+		return filter.Cast<ConstantFilter>().Compare(value);
+	case TableFilterType::IS_NULL:
+		return value.IsNull();
+	case TableFilterType::IS_NOT_NULL:
+		return !value.IsNull();
+	case TableFilterType::IN_FILTER: {
+		auto &in_filter = filter.Cast<InFilter>();
+		for (idx_t i = 0; i < in_filter.values.size(); i++) {
+			if (Value::NotDistinctFrom(value, in_filter.values[i])) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::CONJUNCTION_AND: {
+		auto &and_filter = filter.Cast<ConjunctionAndFilter>();
+		for (idx_t i = 0; i < and_filter.child_filters.size(); i++) {
+			if (!MatchesFilter(*and_filter.child_filters[i], value)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		auto &or_filter = filter.Cast<ConjunctionOrFilter>();
+		for (idx_t i = 0; i < or_filter.child_filters.size(); i++) {
+			if (MatchesFilter(*or_filter.child_filters[i], value)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		throw InvalidInputException("Unsupported pushed filter type for zarr_cells");
+	}
+}
+
+static bool ChunkMayMatchDimensionFilter(const TableFilter &filter, int64_t min_value, int64_t max_value) {
+	switch (filter.filter_type) {
+	case TableFilterType::CONSTANT_COMPARISON: {
+		auto &constant_filter = filter.Cast<ConstantFilter>();
+		auto constant = constant_filter.constant;
+		if (constant.IsNull()) {
+			return false;
+		}
+		auto constant_value = constant.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+		switch (constant_filter.comparison_type) {
+		case ExpressionType::COMPARE_EQUAL:
+			return min_value <= constant_value && constant_value <= max_value;
+		case ExpressionType::COMPARE_GREATERTHAN:
+			return max_value > constant_value;
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			return max_value >= constant_value;
+		case ExpressionType::COMPARE_LESSTHAN:
+			return min_value < constant_value;
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+			return min_value <= constant_value;
+		case ExpressionType::COMPARE_NOTEQUAL:
+			return min_value != max_value || min_value != constant_value;
+		default:
+			return true;
+		}
+	}
+	case TableFilterType::IS_NULL:
+		return false;
+	case TableFilterType::IS_NOT_NULL:
+		return true;
+	case TableFilterType::IN_FILTER: {
+		auto &in_filter = filter.Cast<InFilter>();
+		for (idx_t i = 0; i < in_filter.values.size(); i++) {
+			if (in_filter.values[i].IsNull()) {
+				continue;
+			}
+			auto constant_value = in_filter.values[i].DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+			if (min_value <= constant_value && constant_value <= max_value) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::CONJUNCTION_AND: {
+		auto &and_filter = filter.Cast<ConjunctionAndFilter>();
+		for (idx_t i = 0; i < and_filter.child_filters.size(); i++) {
+			if (!ChunkMayMatchDimensionFilter(*and_filter.child_filters[i], min_value, max_value)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		auto &or_filter = filter.Cast<ConjunctionOrFilter>();
+		for (idx_t i = 0; i < or_filter.child_filters.size(); i++) {
+			if (ChunkMayMatchDimensionFilter(*or_filter.child_filters[i], min_value, max_value)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		return true;
+	}
+}
+
+static column_t GetActualColumnIndex(const vector<column_t> &column_ids, idx_t filter_column_index) {
+	if (filter_column_index < column_ids.size()) {
+		return column_ids[filter_column_index];
+	}
+	return filter_column_index;
+}
+
+static bool RowMatchesFilters(optional_ptr<TableFilterSet> filters, const vector<column_t> &column_ids,
+                              const vector<int64_t> &coordinates, const Value &value, idx_t rank) {
+	if (!filters) {
+		return true;
+	}
+	for (auto it = filters->filters.begin(); it != filters->filters.end(); it++) {
+		auto column_index = GetActualColumnIndex(column_ids, it->first);
+		if (column_index < rank) {
+			if (!MatchesFilter(*it->second, Value::BIGINT(coordinates[column_index]))) {
+				return false;
+			}
+		} else if (column_index == rank) {
+			if (!MatchesFilter(*it->second, value)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static bool ChunkMatchesFilters(optional_ptr<TableFilterSet> filters, const vector<column_t> &column_ids,
+                                const ZarrArrayEntry &array, const ZarrChunkEntry &chunk) {
+	if (!filters) {
+		return true;
+	}
+	for (auto it = filters->filters.begin(); it != filters->filters.end(); it++) {
+		auto column_index = GetActualColumnIndex(column_ids, it->first);
+		if (column_index >= array.rank) {
+			continue;
+		}
+		auto min_value = chunk.chunk_coords[column_index] * array.chunks[column_index];
+		auto max_value = min_value + array.chunks[column_index] - 1;
+		auto array_max = array.shape[column_index] - 1;
+		if (max_value > array_max) {
+			max_value = array_max;
+		}
+		if (!ChunkMayMatchDimensionFilter(*it->second, min_value, max_value)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static vector<ZarrCellRow> MaterializeFilteredCells(FileSystem &fs, const ZarrArrayEntry &array,
+                                                    const vector<ZarrChunkEntry> &all_chunks,
+                                                    optional_ptr<TableFilterSet> filters,
+                                                    const vector<column_t> &column_ids) {
+	auto dtype = ParseNumericDType(array.dtype);
+	auto chunk_element_count = Product(array.chunks);
+	auto expected_chunk_bytes = chunk_element_count * dtype.element_size;
+	vector<ZarrCellRow> rows;
+	rows.reserve(Product(array.shape));
+
+	for (idx_t chunk_idx = 0; chunk_idx < all_chunks.size(); chunk_idx++) {
+		auto &chunk = all_chunks[chunk_idx];
+		if (chunk.array_path != array.array_path) {
+			continue;
+		}
+		if (!ChunkMatchesFilters(filters, column_ids, array, chunk)) {
+			continue;
+		}
+		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
+		auto decoded = DecompressChunk(raw_data, array.compressor, expected_chunk_bytes);
+		for (idx_t linear_index = 0; linear_index < chunk_element_count; linear_index++) {
+			auto local_coords = LinearToCoords(linear_index, array.chunks, array.order);
+			vector<int64_t> global_coords(local_coords.size(), 0);
+			bool in_bounds = true;
+			for (idx_t dim = 0; dim < local_coords.size(); dim++) {
+				global_coords[dim] = chunk.chunk_coords[dim] * array.chunks[dim] + local_coords[dim];
+				if (global_coords[dim] >= array.shape[dim]) {
+					in_bounds = false;
+					break;
+				}
+			}
+			if (!in_bounds) {
+				continue;
+			}
+			auto value_ptr = decoded.data() + (linear_index * dtype.element_size);
+			auto cell_value = DecodeNumericValue(value_ptr, dtype);
+			if (!RowMatchesFilters(filters, column_ids, global_coords, cell_value, NumericCast<idx_t>(array.rank))) {
+				continue;
+			}
+			rows.push_back({std::move(global_coords), std::move(cell_value)});
+		}
+	}
+	return rows;
+}
+
 static bool TryParseInteger(const string &text, int64_t &value) {
 	if (text.empty()) {
 		return false;
@@ -725,8 +939,7 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 	names.push_back("value");
 	return_types.push_back(dtype.logical_type);
 
-	FileSystem &fs = FileSystem::GetFileSystem(context);
-	return make_uniq<ZarrCellsBindData>(NumericCast<idx_t>(array.rank), MaterializeCells(fs, array, chunks));
+	return make_uniq<ZarrCellsBindData>(FileSystem::GetFileSystem(context).ExpandPath(store_path), array, std::move(chunks));
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
@@ -784,18 +997,36 @@ static void ScanChunks(ClientContext &, TableFunctionInput &data_p, DataChunk &o
 }
 
 static void ScanCells(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
-	auto &state = data_p.global_state->Cast<ZarrGlobalState>();
+	auto &state = data_p.global_state->Cast<ZarrCellsGlobalState>();
 	auto &bind_data = data_p.bind_data->Cast<ZarrCellsBindData>();
+	auto output_column_count = state.projection_ids.empty() ? state.column_ids.size() : state.projection_ids.size();
 	idx_t count = 0;
-	while (state.offset < bind_data.rows.size() && count < STANDARD_VECTOR_SIZE) {
-		auto &row = bind_data.rows[state.offset++];
-		for (idx_t dim = 0; dim < bind_data.rank; dim++) {
-			output.SetValue(dim, count, Value::BIGINT(row.coordinates[dim]));
+	while (state.offset < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = state.rows[state.offset++];
+		for (idx_t col = 0; col < output_column_count; col++) {
+			auto base_col = state.projection_ids.empty() ? col : state.projection_ids[col];
+			auto actual_col = state.column_ids[base_col];
+			if (actual_col < bind_data.array.rank) {
+				output.SetValue(col, count, Value::BIGINT(row.coordinates[actual_col]));
+			} else if (actual_col == bind_data.array.rank) {
+				output.SetValue(col, count, row.value);
+			} else {
+				throw InternalException("Unexpected zarr_cells column index");
+			}
 		}
-		output.SetValue(bind_data.rank, count, row.value);
 		count++;
 	}
 	output.SetCardinality(count);
+}
+
+static unique_ptr<GlobalTableFunctionState> InitCells(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = input.bind_data->Cast<ZarrCellsBindData>();
+	auto result = make_uniq<ZarrCellsGlobalState>();
+	FileSystem &fs = FileSystem::GetFileSystem(context);
+	result->column_ids = input.column_ids;
+	result->projection_ids = input.projection_ids;
+	result->rows = MaterializeFilteredCells(fs, bind_data.array, bind_data.chunks, input.filters, input.column_ids);
+	return std::move(result);
 }
 
 TableFunction ZarrMetadata::GetGroupsFunction() {
@@ -811,7 +1042,11 @@ TableFunction ZarrMetadata::GetChunksFunction() {
 }
 
 TableFunction ZarrMetadata::GetCellsFunction() {
-	return TableFunction("zarr_cells", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ScanCells, BindCells, ZarrInit);
+	TableFunction function("zarr_cells", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ScanCells, BindCells, InitCells);
+	function.projection_pushdown = true;
+	function.filter_pushdown = true;
+	function.filter_prune = true;
+	return function;
 }
 
 } // namespace duckdb

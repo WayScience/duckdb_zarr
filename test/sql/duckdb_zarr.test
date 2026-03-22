@@ -75,3 +75,37 @@ ORDER BY dim_0, dim_1;
 3	0	10.5
 3	1	11.5
 3	2	12.5
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+WHERE dim_0 = 0
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	2.5
+0	2	3.5
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+WHERE dim_0 >= 2 AND dim_1 = 1
+ORDER BY dim_0, dim_1;
+----
+2	1	8.5
+3	1	11.5
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+WHERE value >= 150
+ORDER BY dim_0;
+----
+1	200
+
+query I
+SELECT value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+WHERE dim_0 = 1;
+----
+200
