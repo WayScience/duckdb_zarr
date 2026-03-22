@@ -244,6 +244,11 @@ static string ParseCompressorId(const string &compressor) {
 	return OptionalString(root, "id");
 }
 
+static bool HostIsLittleEndian() {
+	uint16_t value = 1;
+	return *reinterpret_cast<unsigned char *>(&value) == 1;
+}
+
 static ZarrNumericType ParseNumericDType(const string &dtype) {
 	if (dtype.size() < 3) {
 		throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
@@ -253,10 +258,28 @@ static ZarrNumericType ParseNumericDType(const string &dtype) {
 	auto kind = dtype[1];
 	auto width = std::stoll(dtype.substr(2));
 	result.element_size = NumericCast<idx_t>(width);
-	result.little_endian = endian != '>';
 	result.is_float = false;
 	result.is_signed = false;
 	result.is_unsigned = false;
+	switch (endian) {
+	case '<':
+		result.little_endian = true;
+		break;
+	case '>':
+		result.little_endian = false;
+		break;
+	case '=':
+		result.little_endian = HostIsLittleEndian();
+		break;
+	case '|':
+		if (width != 1) {
+			throw InvalidInputException("Endian-agnostic dtype is only supported for single-byte values: %s", dtype);
+		}
+		result.little_endian = HostIsLittleEndian();
+		break;
+	default:
+		throw InvalidInputException("Unsupported Zarr dtype byte order marker in dtype: %s", dtype);
+	}
 
 	if (kind == 'i') {
 		result.is_signed = true;
