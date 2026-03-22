@@ -1,0 +1,51 @@
+# name: test/sql/duckdb_zarr.test
+# description: metadata tests for duckdb_zarr
+# group: [sql]
+
+statement error
+SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
+----
+Catalog Error: Table Function with name zarr_groups does not exist!
+
+require duckdb_zarr
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr/%'
+FROM zarr_groups('test/data/simple_v2.zarr')
+ORDER BY group_path;
+----
+/	2	true
+stations	2	true
+
+query IIIIIIIII
+SELECT
+    array_path,
+    rank,
+    shape::VARCHAR,
+    chunk_shape::VARCHAR,
+    dtype,
+    "order",
+    COALESCE(NULLIF(compressor, ''), '<none>'),
+    dimension_separator,
+    metadata_path LIKE '%simple_v2.zarr/%'
+FROM zarr_arrays('test/data/simple_v2.zarr')
+ORDER BY array_path;
+----
+stations/elevation	1	[2]	[2]	<i4	C	<none>	/	true
+temperature	2	[4, 3]	[2, 2]	<f8	C	{"id":"gzip","level":1}	.	true
+
+query IIIII
+SELECT
+    array_path,
+    chunk_key,
+    chunk_coords::VARCHAR,
+    file_size_bytes,
+    file_path LIKE '%simple_v2.zarr/%'
+FROM zarr_chunks('test/data/simple_v2.zarr')
+ORDER BY array_path, chunk_key;
+----
+stations/elevation	0	[0]	8	true
+temperature	0.0	[0, 0]	8	true
+temperature	0.1	[0, 1]	4	true
+temperature	1.0	[1, 0]	8	true
+temperature	1.1	[1, 1]	4	true
