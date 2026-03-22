@@ -39,13 +39,39 @@ SELECT
     array_path,
     chunk_key,
     chunk_coords::VARCHAR,
-    file_size_bytes,
+    file_size_bytes > 0,
     file_path LIKE '%simple_v2.zarr/%'
 FROM zarr_chunks('test/data/simple_v2.zarr')
 ORDER BY array_path, chunk_key;
 ----
-stations/elevation	0	[0]	8	true
-temperature	0.0	[0, 0]	8	true
-temperature	0.1	[0, 1]	4	true
-temperature	1.0	[1, 0]	8	true
-temperature	1.1	[1, 1]	4	true
+stations/elevation	0	[0]	1	1
+temperature	0.0	[0, 0]	1	1
+temperature	0.1	[0, 1]	1	1
+temperature	1.0	[1, 0]	1	1
+temperature	1.1	[1, 1]	1	1
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+ORDER BY dim_0;
+----
+0	100
+1	200
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	2.5
+0	2	3.5
+1	0	4.5
+1	1	5.5
+1	2	6.5
+2	0	7.5
+2	1	8.5
+2	2	9.5
+3	0	10.5
+3	1	11.5
+3	2	12.5

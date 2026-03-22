@@ -5,9 +5,11 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "miniz_wrapper.hpp"
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <tuple>
 
 namespace duckdb {
@@ -44,6 +46,20 @@ struct ZarrChunkEntry {
 	int64_t file_size_bytes;
 };
 
+struct ZarrNumericType {
+	LogicalType logical_type;
+	idx_t element_size;
+	bool is_float;
+	bool is_signed;
+	bool is_unsigned;
+	bool little_endian;
+};
+
+struct ZarrCellRow {
+	vector<int64_t> coordinates;
+	Value value;
+};
+
 template <class ENTRY>
 struct ZarrBindData : public TableFunctionData {
 	explicit ZarrBindData(vector<ENTRY> entries_p) : entries(std::move(entries_p)) {
@@ -54,6 +70,14 @@ struct ZarrBindData : public TableFunctionData {
 
 struct ZarrGlobalState : public GlobalTableFunctionState {
 	idx_t offset = 0;
+};
+
+struct ZarrCellsBindData : public TableFunctionData {
+	ZarrCellsBindData(idx_t rank_p, vector<ZarrCellRow> rows_p) : rank(rank_p), rows(std::move(rows_p)) {
+	}
+
+	idx_t rank;
+	vector<ZarrCellRow> rows;
 };
 
 static string JoinNodePath(const string &base, const string &name) {
@@ -76,6 +100,16 @@ static string ReadTextFile(FileSystem &fs, const string &path) {
 	auto buffer = make_unsafe_uniq_array<char>(size);
 	fs.Read(*handle, buffer.get(), NumericCast<int64_t>(size));
 	return string(buffer.get(), size);
+}
+
+static vector<char> ReadBinaryFile(FileSystem &fs, const string &path) {
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+	auto size = handle->GetFileSize();
+	vector<char> buffer(size);
+	if (size > 0) {
+		fs.Read(*handle, buffer.data(), NumericCast<int64_t>(size));
+	}
+	return buffer;
 }
 
 static yyjson_val *RequireObjectKey(yyjson_val *obj, const char *key) {
@@ -141,6 +175,277 @@ static string JsonToString(yyjson_val *value) {
 	string result(rendered, len);
 	free(rendered);
 	return result;
+}
+
+static string NormalizeArrayPath(const string &path) {
+	idx_t start = 0;
+	idx_t end = path.size();
+	while (start < end && path[start] == '/') {
+		start++;
+	}
+	while (end > start && path[end - 1] == '/') {
+		end--;
+	}
+	return path.substr(start, end - start);
+}
+
+static idx_t Product(const vector<int64_t> &values) {
+	idx_t result = 1;
+	for (auto value : values) {
+		if (value < 0) {
+			throw InvalidInputException("Negative Zarr dimensions are not supported");
+		}
+		result *= NumericCast<idx_t>(value);
+	}
+	return result;
+}
+
+static string ParseCompressorId(const string &compressor) {
+	if (compressor.empty()) {
+		return "";
+	}
+	unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)> doc(yyjson_read(compressor.c_str(), compressor.size(), 0),
+	                                                       yyjson_doc_free);
+	if (!doc) {
+		throw InvalidInputException("Failed to parse Zarr compressor metadata");
+	}
+	auto root = yyjson_doc_get_root(doc.get());
+	if (!yyjson_is_obj(root)) {
+		throw InvalidInputException("Zarr compressor metadata is not an object");
+	}
+	return OptionalString(root, "id");
+}
+
+static ZarrNumericType ParseNumericDType(const string &dtype) {
+	if (dtype.size() < 3) {
+		throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
+	}
+	ZarrNumericType result;
+	auto endian = dtype[0];
+	auto kind = dtype[1];
+	auto width = std::stoll(dtype.substr(2));
+	result.element_size = NumericCast<idx_t>(width);
+	result.little_endian = endian != '>';
+	result.is_float = false;
+	result.is_signed = false;
+	result.is_unsigned = false;
+
+	if (kind == 'i') {
+		result.is_signed = true;
+		switch (width) {
+		case 1:
+			result.logical_type = LogicalType::TINYINT;
+			break;
+		case 2:
+			result.logical_type = LogicalType::SMALLINT;
+			break;
+		case 4:
+			result.logical_type = LogicalType::INTEGER;
+			break;
+		case 8:
+			result.logical_type = LogicalType::BIGINT;
+			break;
+		default:
+			throw InvalidInputException("Unsupported signed integer dtype: %s", dtype);
+		}
+		return result;
+	}
+	if (kind == 'u') {
+		result.is_unsigned = true;
+		switch (width) {
+		case 1:
+			result.logical_type = LogicalType::UTINYINT;
+			break;
+		case 2:
+			result.logical_type = LogicalType::USMALLINT;
+			break;
+		case 4:
+			result.logical_type = LogicalType::UINTEGER;
+			break;
+		case 8:
+			result.logical_type = LogicalType::UBIGINT;
+			break;
+		default:
+			throw InvalidInputException("Unsupported unsigned integer dtype: %s", dtype);
+		}
+		return result;
+	}
+	if (kind == 'f') {
+		result.is_float = true;
+		switch (width) {
+		case 4:
+			result.logical_type = LogicalType::FLOAT;
+			break;
+		case 8:
+			result.logical_type = LogicalType::DOUBLE;
+			break;
+		default:
+			throw InvalidInputException("Unsupported floating-point dtype: %s", dtype);
+		}
+		return result;
+	}
+	throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
+}
+
+static uint64_t ReadUnsignedInteger(const char *ptr, idx_t bytes, bool little_endian) {
+	uint64_t result = 0;
+	if (little_endian) {
+		for (idx_t i = 0; i < bytes; i++) {
+			result |= static_cast<uint64_t>(static_cast<unsigned char>(ptr[i])) << (8 * i);
+		}
+	} else {
+		for (idx_t i = 0; i < bytes; i++) {
+			result = (result << 8) | static_cast<uint64_t>(static_cast<unsigned char>(ptr[i]));
+		}
+	}
+	return result;
+}
+
+static int64_t ReadSignedInteger(const char *ptr, idx_t bytes, bool little_endian) {
+	auto unsigned_value = ReadUnsignedInteger(ptr, bytes, little_endian);
+	if (bytes == sizeof(int64_t)) {
+		return static_cast<int64_t>(unsigned_value);
+	}
+	auto bit_width = bytes * 8;
+	auto sign_bit = uint64_t(1) << (bit_width - 1);
+	if (unsigned_value & sign_bit) {
+		auto mask = ~((uint64_t(1) << bit_width) - 1);
+		unsigned_value |= mask;
+	}
+	return static_cast<int64_t>(unsigned_value);
+}
+
+static Value DecodeNumericValue(const char *ptr, const ZarrNumericType &dtype) {
+	if (dtype.is_float) {
+		if (dtype.element_size == sizeof(float)) {
+			auto bits = NumericCast<uint32_t>(ReadUnsignedInteger(ptr, dtype.element_size, dtype.little_endian));
+			float value;
+			std::memcpy(&value, &bits, sizeof(value));
+			return Value::FLOAT(value);
+		}
+		if (dtype.element_size == sizeof(double)) {
+			auto bits = ReadUnsignedInteger(ptr, dtype.element_size, dtype.little_endian);
+			double value;
+			std::memcpy(&value, &bits, sizeof(value));
+			return Value::DOUBLE(value);
+		}
+	}
+	if (dtype.is_signed) {
+		auto value = ReadSignedInteger(ptr, dtype.element_size, dtype.little_endian);
+		switch (dtype.element_size) {
+		case 1:
+			return Value::TINYINT(NumericCast<int8_t>(value));
+		case 2:
+			return Value::SMALLINT(NumericCast<int16_t>(value));
+		case 4:
+			return Value::INTEGER(NumericCast<int32_t>(value));
+		case 8:
+			return Value::BIGINT(value);
+		default:
+			break;
+		}
+	}
+	if (dtype.is_unsigned) {
+		auto value = ReadUnsignedInteger(ptr, dtype.element_size, dtype.little_endian);
+		switch (dtype.element_size) {
+		case 1:
+			return Value::UTINYINT(NumericCast<uint8_t>(value));
+		case 2:
+			return Value::USMALLINT(NumericCast<uint16_t>(value));
+		case 4:
+			return Value::UINTEGER(NumericCast<uint32_t>(value));
+		case 8:
+			return Value::UBIGINT(value);
+		default:
+			break;
+		}
+	}
+	throw InvalidInputException("Failed to decode Zarr numeric dtype");
+}
+
+static vector<int64_t> LinearToCoords(idx_t linear_index, const vector<int64_t> &shape, const string &order) {
+	vector<int64_t> coordinates(shape.size(), 0);
+	if (shape.empty()) {
+		return coordinates;
+	}
+	if (order == "F") {
+		for (idx_t i = 0; i < shape.size(); i++) {
+			auto dim = NumericCast<idx_t>(shape[i]);
+			coordinates[i] = NumericCast<int64_t>(linear_index % dim);
+			linear_index /= dim;
+		}
+		return coordinates;
+	}
+	for (idx_t offset = 0; offset < shape.size(); offset++) {
+		auto index = shape.size() - offset - 1;
+		auto dim = NumericCast<idx_t>(shape[index]);
+		coordinates[index] = NumericCast<int64_t>(linear_index % dim);
+		linear_index /= dim;
+	}
+	return coordinates;
+}
+
+static vector<char> DecompressChunk(const vector<char> &compressed_data, const string &compressor, idx_t expected_size) {
+	auto compressor_id = ParseCompressorId(compressor);
+	if (compressor_id.empty()) {
+		if (compressed_data.size() != expected_size) {
+			throw InvalidInputException("Uncompressed Zarr chunk size mismatch: expected %llu bytes, got %llu bytes",
+			                            expected_size, compressed_data.size());
+		}
+		return compressed_data;
+	}
+	if (compressor_id != "gzip") {
+		throw InvalidInputException("Unsupported Zarr compressor for zarr_cells: %s", compressor_id);
+	}
+	vector<char> decompressed(expected_size);
+	MiniZStream stream;
+	stream.Decompress(compressed_data.data(), compressed_data.size(), decompressed.data(), decompressed.size());
+	return decompressed;
+}
+
+static const ZarrArrayEntry &FindArrayEntry(const vector<ZarrArrayEntry> &arrays, const string &array_path) {
+	for (idx_t i = 0; i < arrays.size(); i++) {
+		if (arrays[i].array_path == array_path) {
+			return arrays[i];
+		}
+	}
+	throw InvalidInputException("Zarr array \"%s\" was not found in the store", array_path);
+}
+
+static vector<ZarrCellRow> MaterializeCells(FileSystem &fs, const ZarrArrayEntry &array,
+                                            const vector<ZarrChunkEntry> &all_chunks) {
+	auto dtype = ParseNumericDType(array.dtype);
+	auto chunk_element_count = Product(array.chunks);
+	auto expected_chunk_bytes = chunk_element_count * dtype.element_size;
+	vector<ZarrCellRow> rows;
+	rows.reserve(Product(array.shape));
+
+	for (idx_t chunk_idx = 0; chunk_idx < all_chunks.size(); chunk_idx++) {
+		auto &chunk = all_chunks[chunk_idx];
+		if (chunk.array_path != array.array_path) {
+			continue;
+		}
+		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
+		auto decoded = DecompressChunk(raw_data, array.compressor, expected_chunk_bytes);
+		for (idx_t linear_index = 0; linear_index < chunk_element_count; linear_index++) {
+			auto local_coords = LinearToCoords(linear_index, array.chunks, array.order);
+			vector<int64_t> global_coords(local_coords.size(), 0);
+			bool in_bounds = true;
+			for (idx_t dim = 0; dim < local_coords.size(); dim++) {
+				global_coords[dim] = chunk.chunk_coords[dim] * array.chunks[dim] + local_coords[dim];
+				if (global_coords[dim] >= array.shape[dim]) {
+					in_bounds = false;
+					break;
+				}
+			}
+			if (!in_bounds) {
+				continue;
+			}
+			auto value_ptr = decoded.data() + (linear_index * dtype.element_size);
+			rows.push_back({std::move(global_coords), DecodeNumericValue(value_ptr, dtype)});
+		}
+	}
+	return rows;
 }
 
 static bool TryParseInteger(const string &text, int64_t &value) {
@@ -395,6 +700,35 @@ static unique_ptr<FunctionData> BindChunks(ClientContext &context, TableFunction
 	return make_uniq<ZarrBindData<ZarrChunkEntry>>(std::move(chunks));
 }
 
+static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() < 2 || input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
+		throw BinderException("zarr_cells requires a non-NULL store path and array path");
+	}
+
+	auto store_path = StringValue::Get(input.inputs[0]);
+	auto array_path = NormalizeArrayPath(StringValue::Get(input.inputs[1]));
+
+	vector<ZarrGroupEntry> groups;
+	vector<ZarrArrayEntry> arrays;
+	vector<ZarrChunkEntry> chunks;
+	DiscoverStore(context, store_path, groups, arrays, chunks);
+	auto &array = FindArrayEntry(arrays, array_path);
+	auto dtype = ParseNumericDType(array.dtype);
+
+	names.reserve(array.rank + 1);
+	return_types.reserve(array.rank + 1);
+	for (idx_t dim = 0; dim < NumericCast<idx_t>(array.rank); dim++) {
+		names.push_back("dim_" + std::to_string(dim));
+		return_types.push_back(LogicalType::BIGINT);
+	}
+	names.push_back("value");
+	return_types.push_back(dtype.logical_type);
+
+	FileSystem &fs = FileSystem::GetFileSystem(context);
+	return make_uniq<ZarrCellsBindData>(NumericCast<idx_t>(array.rank), MaterializeCells(fs, array, chunks));
+}
+
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
 	auto &state = data_p.global_state->Cast<ZarrGlobalState>();
 	auto &entries = data_p.bind_data->Cast<ZarrBindData<ZarrGroupEntry>>().entries;
@@ -449,6 +783,21 @@ static void ScanChunks(ClientContext &, TableFunctionInput &data_p, DataChunk &o
 	output.SetCardinality(count);
 }
 
+static void ScanCells(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<ZarrGlobalState>();
+	auto &bind_data = data_p.bind_data->Cast<ZarrCellsBindData>();
+	idx_t count = 0;
+	while (state.offset < bind_data.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = bind_data.rows[state.offset++];
+		for (idx_t dim = 0; dim < bind_data.rank; dim++) {
+			output.SetValue(dim, count, Value::BIGINT(row.coordinates[dim]));
+		}
+		output.SetValue(bind_data.rank, count, row.value);
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
 TableFunction ZarrMetadata::GetGroupsFunction() {
 	return TableFunction("zarr_groups", {LogicalType::VARCHAR}, ScanGroups, BindGroups, ZarrInit);
 }
@@ -459,6 +808,10 @@ TableFunction ZarrMetadata::GetArraysFunction() {
 
 TableFunction ZarrMetadata::GetChunksFunction() {
 	return TableFunction("zarr_chunks", {LogicalType::VARCHAR}, ScanChunks, BindChunks, ZarrInit);
+}
+
+TableFunction ZarrMetadata::GetCellsFunction() {
+	return TableFunction("zarr_cells", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ScanCells, BindCells, ZarrInit);
 }
 
 } // namespace duckdb

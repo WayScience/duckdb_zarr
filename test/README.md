@@ -7,6 +7,7 @@ The current suite focuses on the Phase 1 metadata slice:
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
+- `zarr_cells(path, array_path)`
 
 The sample store is checked in under `test/data/simple_v2.zarr` and can be regenerated with:
 

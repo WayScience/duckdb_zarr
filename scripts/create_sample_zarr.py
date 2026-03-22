@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import gzip
+import shutil
+import struct
 from pathlib import Path
 
 
@@ -15,12 +18,13 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
-def write_chunk(path: Path, size: int, fill: int) -> None:
+def write_chunk(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(bytes([fill]) * size)
+    path.write_bytes(payload)
 
 
 def main() -> None:
+    shutil.rmtree(STORE, ignore_errors=True)
     write_json(STORE / ".zgroup", {"zarr_format": 2})
 
     write_json(
@@ -37,10 +41,10 @@ def main() -> None:
             "dimension_separator": ".",
         },
     )
-    write_chunk(STORE / "temperature" / "0.0", 8, 1)
-    write_chunk(STORE / "temperature" / "0.1", 4, 2)
-    write_chunk(STORE / "temperature" / "1.0", 8, 3)
-    write_chunk(STORE / "temperature" / "1.1", 4, 4)
+    write_chunk(STORE / "temperature" / "0.0", gzip.compress(struct.pack("<4d", 1.5, 2.5, 4.5, 5.5)))
+    write_chunk(STORE / "temperature" / "0.1", gzip.compress(struct.pack("<4d", 3.5, 0.0, 6.5, 0.0)))
+    write_chunk(STORE / "temperature" / "1.0", gzip.compress(struct.pack("<4d", 7.5, 8.5, 10.5, 11.5)))
+    write_chunk(STORE / "temperature" / "1.1", gzip.compress(struct.pack("<4d", 9.5, 0.0, 12.5, 0.0)))
 
     write_json(STORE / "stations" / ".zgroup", {"zarr_format": 2})
     write_json(
@@ -57,7 +61,7 @@ def main() -> None:
             "dimension_separator": "/",
         },
     )
-    write_chunk(STORE / "stations" / "elevation" / "0", 8, 5)
+    write_chunk(STORE / "stations" / "elevation" / "0", struct.pack("<2i", 100, 200))
 
 
 if __name__ == "__main__":

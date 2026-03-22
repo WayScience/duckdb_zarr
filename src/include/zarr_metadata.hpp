@@ -9,6 +9,7 @@ public:
 	static TableFunction GetGroupsFunction();
 	static TableFunction GetArraysFunction();
 	static TableFunction GetChunksFunction();
+	static TableFunction GetCellsFunction();
 };
 
 } // namespace duckdb

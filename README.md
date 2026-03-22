@@ -13,8 +13,9 @@ Today’s extension provides local-store metadata table functions:
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
+- `zarr_cells(path, array_path)`
 
-This gives a usable SQL entrypoint for understanding a Zarr store before building `zarr_cells()` and predicate-aware chunk decoding.
+This gives a usable SQL entrypoint for understanding a Zarr store and projecting dense numeric arrays into relational rows.
 
 ## What Works
 
@@ -24,16 +25,19 @@ The MVP currently supports:
 - Group enumeration from `.zgroup`
 - Array enumeration from `.zarray`
 - Chunk enumeration for both `.` and `/` dimension separators
+- `zarr_cells(path, array_path)` for dense numeric arrays
+- Uncompressed and gzip-compressed chunk payloads
+- Dynamic `(dim_0, ..., value)` projection based on array rank and dtype
 - Developer fixture generation and SQLLogic tests
 
 The MVP does not yet support:
 
-- Reading chunk payloads into DuckDB rows
-- Arrow materialization
+- Blosc chunk decode
+- Missing-chunk fill-value materialization
 - Predicate pushdown or chunk pruning during execution
 - Remote stores
 - Zarr v3 metadata
-- Blosc or gzip decoding of cell data
+- Arrow materialization
 
 ## Quick Start
 
@@ -67,6 +71,7 @@ Then query a sample store:
 SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
 SELECT * FROM zarr_arrays('test/data/simple_v2.zarr');
 SELECT * FROM zarr_chunks('test/data/simple_v2.zarr');
+SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
 ```
 
 ## Developer Workflow
@@ -92,12 +97,13 @@ The current code maps directly to the architecture document:
 - Metadata Parser: `.zgroup` and `.zarray` parsing via `yyjson`
 - DuckDB Bridge: table functions registered from the extension entrypoint
 
-The next major implementation step is `zarr_cells(path, array_path)` or equivalent, backed by:
+The next major implementation step is to move from eager row materialization toward a scan-oriented execution path backed by:
 
 1. chunk-file reads
 2. codec decode
 3. typed value materialization
 4. row projection `(dim_0, ..., value)`
+5. planner-aware pruning and batching
 
 ## Code Layout
 
@@ -113,7 +119,7 @@ No new third-party runtime dependencies were needed for this first slice beyond 
 For the next phase, useful dependency choices will likely be:
 
 - a stable Zarr metadata/codec implementation strategy in C++
-- gzip and blosc decode support for chunk payloads
+- blosc decode support for chunk payloads
 - Arrow integration once `zarr_cells()` starts producing typed batches
 
 If you want me to take on Phase 2 next, I may need to add codec-oriented dependencies depending on whether you want native C++ decode, Arrow-first integration, or a hybrid approach.
