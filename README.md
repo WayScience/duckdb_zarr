@@ -52,6 +52,13 @@ Build the extension:
 make
 ```
 
+Install developer tooling for formatting and hooks:
+
+```sh
+python3 -m pip install pre-commit clang-format==11.0.1
+pre-commit install
+```
+
 Create the checked-in sample fixture again if needed:
 
 ```sh
@@ -72,6 +79,18 @@ python3 scripts/package_extension_repository.py \
   --out-dir build/extension-repository \
   --extension-name duckdb_zarr \
   --duckdb-version v1.5.0
+```
+
+Run the formatter checks directly:
+
+```sh
+make format-check
+```
+
+Auto-fix formatting:
+
+```sh
+make format-fix
 ```
 
 Open the DuckDB shell with the extension linked in:
@@ -129,6 +148,13 @@ The repository is still the standard DuckDB extension template, so the main comm
 - `make test`: run SQLLogic tests
 - `make fixture`: regenerate the sample Zarr store
 - `make test_metadata`: regenerate the fixture and run tests
+- `make format-check`: verify DuckDB formatting for `src/` and `test/`
+- `make format-fix`: apply DuckDB formatting for `src/` and `test/`
+
+This repo also includes a pre-commit configuration in
+[`\.pre-commit-config.yaml`](/Users/buntend/Documents/work/duckdb_zarr/.pre-commit-config.yaml)
+that runs the DuckDB formatter automatically before commits. The formatter wrapper depends on `clang-format`,
+and the current DuckDB script expects `clang-format==11.0.1`.
 
 Useful build outputs:
 

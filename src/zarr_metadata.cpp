@@ -413,7 +413,8 @@ static vector<int64_t> LinearToCoords(idx_t linear_index, const vector<int64_t> 
 	return coordinates;
 }
 
-static vector<char> DecompressChunk(const vector<char> &compressed_data, const string &compressor, idx_t expected_size) {
+static vector<char> DecompressChunk(const vector<char> &compressed_data, const string &compressor,
+                                    idx_t expected_size) {
 	auto compressor_id = ParseCompressorId(compressor);
 	if (compressor_id.empty()) {
 		if (compressed_data.size() != expected_size) {
@@ -630,7 +631,8 @@ static idx_t GetOutputColumnCount(const ZarrCellsGlobalState &state) {
 }
 
 static void WriteCellToOutput(const ZarrCellsBindData &bind_data, const ZarrCellsGlobalState &state,
-                              const vector<int64_t> &coordinates, const Value &value, DataChunk &output, idx_t row_idx) {
+                              const vector<int64_t> &coordinates, const Value &value, DataChunk &output,
+                              idx_t row_idx) {
 	auto output_column_count = GetOutputColumnCount(state);
 	for (idx_t col = 0; col < output_column_count; col++) {
 		auto base_col = state.projection_ids.empty() ? col : state.projection_ids[col];
@@ -689,8 +691,8 @@ static bool TryParseChunkCoords(const string &chunk_key, char separator, vector<
 	return true;
 }
 
-static void CollectSlashChunks(FileSystem &fs, const string &store_path, const string &array_path, const string &dir_path,
-                               const string &relative_key, vector<ZarrChunkEntry> &entries) {
+static void CollectSlashChunks(FileSystem &fs, const string &store_path, const string &array_path,
+                               const string &dir_path, const string &relative_key, vector<ZarrChunkEntry> &entries) {
 	fs.ListFiles(dir_path, [&](const string &child_name, bool is_dir) {
 		if (StringUtil::StartsWith(child_name, ".")) {
 			return;
@@ -880,7 +882,8 @@ static void GenerateChunkEntriesRecursive(FileSystem &fs, const string &store_pa
 	}
 }
 
-static vector<ZarrChunkEntry> GenerateChunkEntries(FileSystem &fs, const string &store_path, const ZarrArrayEntry &array) {
+static vector<ZarrChunkEntry> GenerateChunkEntries(FileSystem &fs, const string &store_path,
+                                                   const ZarrArrayEntry &array) {
 	vector<ZarrChunkEntry> chunks;
 	vector<int64_t> coords(NumericCast<idx_t>(array.rank), 0);
 	GenerateChunkEntriesRecursive(fs, store_path, array, coords, 0, chunks);
@@ -914,7 +917,8 @@ static bool DiscoverConsolidatedStore(FileSystem &fs, const string &store_path, 
 		string key(unsafe_yyjson_get_str(entry_key), unsafe_yyjson_get_len(entry_key));
 		if (StringUtil::EndsWith(key, ".zgroup")) {
 			auto relative_path = RelativePathFromMetadataKey(key, ".zgroup");
-			groups.push_back(ParseGroupMetadata(entry_value, store_path, relative_path, MetadataPathForKey(store_path, key)));
+			groups.push_back(
+			    ParseGroupMetadata(entry_value, store_path, relative_path, MetadataPathForKey(store_path, key)));
 		} else if (StringUtil::EndsWith(key, ".zarray")) {
 			auto relative_path = RelativePathFromMetadataKey(key, ".zarray");
 			auto array =
@@ -1011,8 +1015,8 @@ static unique_ptr<FunctionData> BindArrays(ClientContext &context, TableFunction
 	vector<ZarrChunkEntry> chunks;
 	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks);
 
-	names = {"store_path", "array_path", "zarr_format", "rank", "shape", "chunk_shape",
-	         "dtype",      "order",      "compressor",  "dimension_separator", "metadata_path"};
+	names = {"store_path", "array_path", "zarr_format",         "rank",         "shape", "chunk_shape", "dtype",
+	         "order",      "compressor", "dimension_separator", "metadata_path"};
 	return_types = {LogicalType::VARCHAR,
 	                LogicalType::VARCHAR,
 	                LogicalType::BIGINT,
@@ -1038,12 +1042,9 @@ static unique_ptr<FunctionData> BindChunks(ClientContext &context, TableFunction
 	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks);
 
 	names = {"store_path", "array_path", "chunk_key", "chunk_coords", "file_path", "file_size_bytes"};
-	return_types = {LogicalType::VARCHAR,
-	                LogicalType::VARCHAR,
-	                LogicalType::VARCHAR,
-	                LogicalType::LIST(LogicalType::BIGINT),
-	                LogicalType::VARCHAR,
-	                LogicalType::BIGINT};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR, LogicalType::LIST(LogicalType::BIGINT),
+	                LogicalType::VARCHAR, LogicalType::BIGINT};
 	return make_uniq<ZarrBindData<ZarrChunkEntry>>(std::move(chunks));
 }
 
@@ -1072,7 +1073,8 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 	names.push_back("value");
 	return_types.push_back(dtype.logical_type);
 
-	return make_uniq<ZarrCellsBindData>(FileSystem::GetFileSystem(context).ExpandPath(store_path), array, std::move(chunks));
+	return make_uniq<ZarrCellsBindData>(FileSystem::GetFileSystem(context).ExpandPath(store_path), array,
+	                                    std::move(chunks));
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
