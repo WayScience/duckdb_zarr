@@ -6,6 +6,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+env:
+  DUCKDB_VERSION: v1.5.0
+
 permissions:
   contents: read
   pages: write
@@ -20,8 +23,8 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
     with:
-      duckdb_version: v1.5.0
-      ci_tools_version: v1.5.0
+      duckdb_version: ${{ env.DUCKDB_VERSION }}
+      ci_tools_version: ${{ env.DUCKDB_VERSION }}
       extension_name: duckdb_zarr
 
   package-repository:
@@ -35,7 +38,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: duckdb_zarr-v1.5.0-extension-*
+          pattern: duckdb_zarr-${{ env.DUCKDB_VERSION }}-extension-*
           path: build/distribution-artifacts
           merge-multiple: false
 
@@ -45,7 +48,7 @@ jobs:
             --artifacts-dir build/distribution-artifacts \
             --out-dir build/extension-repository \
             --extension-name duckdb_zarr \
-            --duckdb-version v1.5.0
+            --duckdb-version ${{ env.DUCKDB_VERSION }}
 
       - uses: actions/upload-pages-artifact@v3
         with:

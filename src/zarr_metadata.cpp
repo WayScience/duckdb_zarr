@@ -14,6 +14,7 @@
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <tuple>
 
@@ -73,7 +74,7 @@ struct ZarrGlobalState : public GlobalTableFunctionState {
 };
 
 struct ZarrCellsBindData : public TableFunctionData {
-	ZarrCellsBindData(string store_path_p, ZarrArrayEntry array_p, vector<ZarrChunkEntry> chunks_p)
+	ZarrCellsBindData(ZarrArrayEntry array_p, vector<ZarrChunkEntry> chunks_p)
 	    : array(std::move(array_p)), chunks(std::move(chunks_p)) {
 	}
 	ZarrArrayEntry array;
@@ -691,7 +692,12 @@ static bool TryParseInteger(const string &text, int64_t &value) {
 			return false;
 		}
 	}
-	value = std::stoll(text);
+	int64_t parsed_value;
+	auto result = std::from_chars(text.data(), text.data() + text.size(), parsed_value);
+	if (result.ec != std::errc() || result.ptr != text.data() + text.size()) {
+		return false;
+	}
+	value = parsed_value;
 	return true;
 }
 
@@ -1094,8 +1100,7 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 	names.push_back("value");
 	return_types.push_back(dtype.logical_type);
 
-	return make_uniq<ZarrCellsBindData>(FileSystem::GetFileSystem(context).ExpandPath(store_path), array,
-	                                    std::move(chunks));
+	return make_uniq<ZarrCellsBindData>(array, std::move(chunks));
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
