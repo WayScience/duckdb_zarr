@@ -130,7 +130,7 @@ To make this work for your repository:
 Then users can point DuckDB at that repository URL:
 
 ```sql
-SET custom_extension_repository='https://<owner>.github.io/<repo>';
+SET custom_extension_repository='https://d33bs.github.io/duckdb_zarr';
 INSTALL duckdb_zarr;
 LOAD duckdb_zarr;
 ```
@@ -138,7 +138,7 @@ LOAD duckdb_zarr;
 If the published repository is hosted at the root of the GitHub Pages site, DuckDB will resolve binaries under paths like:
 
 ```text
-https://<owner>.github.io/<repo>/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
+https://d33bs.github.io/duckdb_zarr/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
 ```
 
 ## Release Checklist
@@ -155,13 +155,13 @@ To publish a new installable extension release from this repository:
    - package the DuckDB extension repository layout
    - deploy the static repository to GitHub Pages
 5. Verify that a published artifact path exists, for example:
-   `https://<owner>.github.io/<repo>/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
+   `https://d33bs.github.io/duckdb_zarr/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
 6. Optionally create a GitHub Release for human-readable notes. The installable path comes from the tag-triggered Pages workflow, not the Release object itself.
 
 After that, users can install the extension with:
 
 ```sql
-SET custom_extension_repository='https://<owner>.github.io/<repo>';
+SET custom_extension_repository='https://d33bs.github.io/duckdb_zarr';
 INSTALL duckdb_zarr;
 LOAD duckdb_zarr;
 ```
