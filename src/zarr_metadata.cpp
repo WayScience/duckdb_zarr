@@ -718,8 +718,8 @@ static bool TryParseChunkCoords(const string &chunk_key, char separator, vector<
 	return true;
 }
 
-static void CollectSlashChunks(FileSystem &fs, const string &store_path, const string &array_path,
-                               const string &dir_path, const string &relative_key, vector<ZarrChunkEntry> &entries) {
+static void CollectSlashChunks(FileSystem &fs, const ZarrArrayEntry &array, const string &dir_path,
+                               const string &relative_key, vector<ZarrChunkEntry> &entries) {
 	fs.ListFiles(dir_path, [&](const string &child_name, bool is_dir) {
 		if (StringUtil::StartsWith(child_name, ".")) {
 			return;
@@ -727,20 +727,23 @@ static void CollectSlashChunks(FileSystem &fs, const string &store_path, const s
 		auto child_path = fs.JoinPath(dir_path, child_name);
 		auto next_key = relative_key.empty() ? child_name : relative_key + "/" + child_name;
 		if (is_dir) {
-			CollectSlashChunks(fs, store_path, array_path, child_path, next_key, entries);
+			CollectSlashChunks(fs, array, child_path, next_key, entries);
 			return;
 		}
 		vector<int64_t> coords;
 		if (!TryParseChunkCoords(next_key, '/', coords)) {
 			return;
 		}
+		if (coords.size() != NumericCast<idx_t>(array.rank)) {
+			return;
+		}
 		auto handle = fs.OpenFile(child_path, FileFlags::FILE_FLAGS_READ);
-		entries.push_back({store_path, array_path, next_key, std::move(coords), child_path,
+		entries.push_back({array.store_path, array.array_path, next_key, std::move(coords), child_path,
 		                   NumericCast<int64_t>(handle->GetFileSize())});
 	});
 }
 
-static void CollectDotChunks(FileSystem &fs, const string &store_path, const string &array_path, const string &dir_path,
+static void CollectDotChunks(FileSystem &fs, const ZarrArrayEntry &array, const string &dir_path,
                              vector<ZarrChunkEntry> &entries) {
 	fs.ListFiles(dir_path, [&](const string &child_name, bool is_dir) {
 		if (is_dir) {
@@ -754,8 +757,11 @@ static void CollectDotChunks(FileSystem &fs, const string &store_path, const str
 		if (!TryParseChunkCoords(child_name, '.', coords)) {
 			return;
 		}
+		if (coords.size() != NumericCast<idx_t>(array.rank)) {
+			return;
+		}
 		auto handle = fs.OpenFile(child_path, FileFlags::FILE_FLAGS_READ);
-		entries.push_back({store_path, array_path, child_name, std::move(coords), child_path,
+		entries.push_back({array.store_path, array.array_path, child_name, std::move(coords), child_path,
 		                   NumericCast<int64_t>(handle->GetFileSize())});
 	});
 }
@@ -772,8 +778,24 @@ static ZarrArrayEntry ParseArrayMetadata(FileSystem &fs, const string &store_pat
 	return ParseArrayMetadataObject(yyjson_doc_get_root(doc.get()), store_path, relative_path, metadata_path);
 }
 
+static string ArrayDirectoryPath(FileSystem &fs, const string &store_path, const string &array_path) {
+	if (array_path.empty()) {
+		return store_path;
+	}
+	return fs.JoinPath(store_path, array_path);
+}
+
+static void CollectArrayChunks(FileSystem &fs, const ZarrArrayEntry &array, vector<ZarrChunkEntry> &chunks) {
+	auto dir_path = ArrayDirectoryPath(fs, array.store_path, array.array_path);
+	if (array.dimension_separator == "/") {
+		CollectSlashChunks(fs, array, dir_path, "", chunks);
+	} else {
+		CollectDotChunks(fs, array, dir_path, chunks);
+	}
+}
+
 static void TraverseStore(FileSystem &fs, const string &store_path, const string &dir_path, const string &relative_path,
-                          vector<ZarrGroupEntry> &groups, vector<ZarrArrayEntry> &arrays,
+                          bool collect_chunks, vector<ZarrGroupEntry> &groups, vector<ZarrArrayEntry> &arrays,
                           vector<ZarrChunkEntry> &chunks) {
 	auto group_metadata = fs.JoinPath(dir_path, ".zgroup");
 	auto array_metadata = fs.JoinPath(dir_path, ".zarray");
@@ -790,10 +812,8 @@ static void TraverseStore(FileSystem &fs, const string &store_path, const string
 
 	if (fs.FileExists(array_metadata)) {
 		auto entry = ParseArrayMetadata(fs, store_path, relative_path, dir_path);
-		if (entry.dimension_separator == "/") {
-			CollectSlashChunks(fs, store_path, entry.array_path, dir_path, "", chunks);
-		} else {
-			CollectDotChunks(fs, store_path, entry.array_path, dir_path, chunks);
+		if (collect_chunks) {
+			CollectArrayChunks(fs, entry, chunks);
 		}
 		arrays.push_back(std::move(entry));
 		return;
@@ -807,7 +827,8 @@ static void TraverseStore(FileSystem &fs, const string &store_path, const string
 			return;
 		}
 		auto child_path = fs.JoinPath(dir_path, child_name);
-		TraverseStore(fs, store_path, child_path, JoinNodePath(relative_path, child_name), groups, arrays, chunks);
+		TraverseStore(fs, store_path, child_path, JoinNodePath(relative_path, child_name), collect_chunks, groups,
+		              arrays, chunks);
 	});
 }
 
@@ -837,6 +858,17 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 	auto dimension_separator = OptionalString(root, "dimension_separator", ".");
 	auto shape = RequireInt64Array(root, "shape");
 	auto chunks = RequireInt64Array(root, "chunks");
+	if (shape.size() != chunks.size()) {
+		throw InvalidInputException("%s has mismatched shape/chunks rank", metadata_path);
+	}
+	for (idx_t i = 0; i < shape.size(); i++) {
+		if (shape[i] < 0) {
+			throw InvalidInputException("%s contains a negative shape dimension", metadata_path);
+		}
+		if (chunks[i] <= 0) {
+			throw InvalidInputException("%s contains a non-positive chunk dimension", metadata_path);
+		}
+	}
 
 	return {store_path,
 	        relative_path,
@@ -918,7 +950,8 @@ static vector<ZarrChunkEntry> GenerateChunkEntries(FileSystem &fs, const string 
 }
 
 static bool DiscoverConsolidatedStore(FileSystem &fs, const string &store_path, vector<ZarrGroupEntry> &groups,
-                                      vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks) {
+                                      vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks,
+                                      bool collect_chunks) {
 	auto metadata_path = store_path + "/.zmetadata";
 	if (!fs.FileExists(metadata_path)) {
 		return false;
@@ -950,8 +983,10 @@ static bool DiscoverConsolidatedStore(FileSystem &fs, const string &store_path, 
 			auto relative_path = RelativePathFromMetadataKey(key, ".zarray");
 			auto array =
 			    ParseArrayMetadataObject(entry_value, store_path, relative_path, MetadataPathForKey(store_path, key));
-			auto array_chunks = GenerateChunkEntries(fs, store_path, array);
-			chunks.insert(chunks.end(), array_chunks.begin(), array_chunks.end());
+			if (collect_chunks) {
+				auto array_chunks = GenerateChunkEntries(fs, store_path, array);
+				chunks.insert(chunks.end(), array_chunks.begin(), array_chunks.end());
+			}
 			arrays.push_back(std::move(array));
 		}
 	}
@@ -975,7 +1010,7 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
-	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks)) {
+	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, false)) {
 		if (!fs.DirectoryExists(store_path)) {
 			if (FileSystem::IsRemoteFile(path)) {
 				throw InvalidInputException(
@@ -983,7 +1018,7 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 			}
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
 		}
-		TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
+		TraverseStore(fs, store_path, store_path, "", false, groups, arrays, chunks);
 	}
 	std::sort(groups.begin(), groups.end(), [](const ZarrGroupEntry &lhs, const ZarrGroupEntry &rhs) {
 		return std::tie(lhs.group_path, lhs.metadata_path) < std::tie(rhs.group_path, rhs.metadata_path);
@@ -992,11 +1027,11 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 }
 
 static void DiscoverStore(ClientContext &context, const string &path, vector<ZarrGroupEntry> &groups,
-                          vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks) {
+                          vector<ZarrArrayEntry> &arrays, vector<ZarrChunkEntry> &chunks, bool collect_chunks) {
 	FileSystem &fs = FileSystem::GetFileSystem(context);
 	EnsureRemoteFilesystemSupport(context, path);
 	auto store_path = NormalizeStorePath(fs, path);
-	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks)) {
+	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, collect_chunks)) {
 		if (!fs.DirectoryExists(store_path)) {
 			if (FileSystem::IsRemoteFile(path)) {
 				throw InvalidInputException(
@@ -1004,7 +1039,7 @@ static void DiscoverStore(ClientContext &context, const string &path, vector<Zar
 			}
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
 		}
-		TraverseStore(fs, store_path, store_path, "", groups, arrays, chunks);
+		TraverseStore(fs, store_path, store_path, "", collect_chunks, groups, arrays, chunks);
 	}
 	std::sort(groups.begin(), groups.end(), [](const ZarrGroupEntry &lhs, const ZarrGroupEntry &rhs) {
 		return std::tie(lhs.group_path, lhs.metadata_path) < std::tie(rhs.group_path, rhs.metadata_path);
@@ -1040,7 +1075,7 @@ static unique_ptr<FunctionData> BindArrays(ClientContext &context, TableFunction
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
-	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks);
+	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks, false);
 
 	names = {"store_path", "array_path", "zarr_format",         "rank",         "shape", "chunk_shape", "dtype",
 	         "order",      "compressor", "dimension_separator", "metadata_path"};
@@ -1066,7 +1101,7 @@ static unique_ptr<FunctionData> BindChunks(ClientContext &context, TableFunction
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
-	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks);
+	DiscoverStore(context, StringValue::Get(input.inputs[0]), groups, arrays, chunks, true);
 
 	names = {"store_path", "array_path", "chunk_key", "chunk_coords", "file_path", "file_size_bytes"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -1087,9 +1122,10 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
-	DiscoverStore(context, store_path, groups, arrays, chunks);
+	DiscoverStore(context, store_path, groups, arrays, chunks, false);
 	auto &array = FindArrayEntry(arrays, array_path);
 	auto dtype = ParseNumericDType(array.dtype);
+	chunks = GenerateChunkEntries(FileSystem::GetFileSystem(context), array.store_path, array);
 
 	names.reserve(array.rank + 1);
 	return_types.reserve(array.rank + 1);

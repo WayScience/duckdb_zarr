@@ -13,9 +13,9 @@ Today’s extension provides metadata and relational scan table functions for lo
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
-- `zarr_cells(path, array_path)`
+- `zarr_cells(path, array_path)` for numeric Zarr dtypes `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f4`, and `f8`
 
-This gives a usable SQL entrypoint for understanding a Zarr store and projecting dense numeric arrays into relational rows.
+This gives a usable SQL entrypoint for understanding a Zarr store and projecting dense numeric arrays into relational rows. Other dtypes such as `f2`/float16, complex values, and other unsupported or non-standard Zarr dtypes are currently rejected by `zarr_cells(path, array_path)`.
 
 ## What Works
 
@@ -28,7 +28,7 @@ The MVP currently supports:
 - Group enumeration from `.zgroup`
 - Array enumeration from `.zarray`
 - Chunk enumeration for both `.` and `/` dimension separators
-- `zarr_cells(path, array_path)` for dense numeric arrays
+- `zarr_cells(path, array_path)` for dense numeric arrays with dtypes `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f4`, and `f8`
 - Uncompressed and gzip-compressed chunk payloads
 - Dynamic `(dim_0, ..., value)` projection based on array rank and dtype
 - Projection-aware `zarr_cells()` scans
@@ -39,6 +39,7 @@ The MVP currently supports:
 
 The MVP does not yet support:
 
+- `zarr_cells()` for dtypes outside `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f4`, and `f8`
 - Blosc chunk decode
 - Missing-chunk fill-value materialization
 - Non-consolidated remote store discovery

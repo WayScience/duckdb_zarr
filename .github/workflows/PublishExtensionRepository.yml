@@ -23,8 +23,8 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
     with:
-      duckdb_version: ${{ env.DUCKDB_VERSION }}
-      ci_tools_version: ${{ env.DUCKDB_VERSION }}
+      duckdb_version: v1.5.0
+      ci_tools_version: v1.5.0
       extension_name: duckdb_zarr
 
   package-repository:
