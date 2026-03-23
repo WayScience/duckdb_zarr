@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / "test" / "data" / "simple_v2.zarr"
+OME_STORE = ROOT / "test" / "data" / "ome_example.ome.zarr"
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -27,7 +28,7 @@ def gzip_chunk(payload: bytes) -> bytes:
     return gzip.compress(payload, compresslevel=1, mtime=0)
 
 
-def main() -> None:
+def create_simple_store() -> None:
     shutil.rmtree(STORE, ignore_errors=True)
     root_group = {"zarr_format": 2}
     write_json(STORE / ".zgroup", root_group)
@@ -83,6 +84,77 @@ def main() -> None:
             },
         },
     )
+
+
+def create_ome_store() -> None:
+    shutil.rmtree(OME_STORE, ignore_errors=True)
+    root_group = {"zarr_format": 2}
+    root_attrs = {
+        "multiscales": [
+            {
+                "version": "0.4",
+                "name": "example",
+                "axes": [
+                    {"name": "c", "type": "channel"},
+                    {"name": "y", "type": "space", "unit": "micrometer"},
+                    {"name": "x", "type": "space", "unit": "micrometer"},
+                ],
+                "datasets": [
+                    {
+                        "path": "0",
+                        "coordinateTransformations": [{"type": "scale", "scale": [1.0, 0.65, 0.65]}],
+                    }
+                ],
+            }
+        ],
+        "omero": {
+            "name": "example",
+            "channels": [
+                {"label": "DNA", "color": "FF0000"},
+                {"label": "RNA", "color": "00FF00"},
+            ],
+        },
+    }
+    level0_array = {
+        "chunks": [1, 2, 2],
+        "compressor": {"id": "gzip", "level": 1},
+        "dtype": "<u2",
+        "fill_value": 0,
+        "filters": None,
+        "order": "C",
+        "shape": [2, 2, 3],
+        "zarr_format": 2,
+        "dimension_separator": "/",
+    }
+    level0_attrs = {"_ARRAY_DIMENSIONS": ["c", "y", "x"]}
+
+    write_json(OME_STORE / ".zgroup", root_group)
+    write_json(OME_STORE / ".zattrs", root_attrs)
+    write_json(OME_STORE / "0" / ".zarray", level0_array)
+    write_json(OME_STORE / "0" / ".zattrs", level0_attrs)
+
+    write_chunk(OME_STORE / "0" / "0" / "0" / "0", gzip_chunk(struct.pack("<4H", 1, 2, 4, 5)))
+    write_chunk(OME_STORE / "0" / "0" / "0" / "1", gzip_chunk(struct.pack("<4H", 3, 0, 6, 0)))
+    write_chunk(OME_STORE / "0" / "1" / "0" / "0", gzip_chunk(struct.pack("<4H", 7, 8, 10, 11)))
+    write_chunk(OME_STORE / "0" / "1" / "0" / "1", gzip_chunk(struct.pack("<4H", 9, 0, 12, 0)))
+
+    write_json(
+        OME_STORE / ".zmetadata",
+        {
+            "zarr_consolidated_format": 1,
+            "metadata": {
+                ".zgroup": root_group,
+                ".zattrs": root_attrs,
+                "0/.zarray": level0_array,
+                "0/.zattrs": level0_attrs,
+            },
+        },
+    )
+
+
+def main() -> None:
+    create_simple_store()
+    create_ome_store()
 
 
 if __name__ == "__main__":

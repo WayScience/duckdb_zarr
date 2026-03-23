@@ -24,6 +24,7 @@ The MVP currently supports:
 - Local filesystem Zarr v2 discovery
 - Zarr v2 consolidated metadata discovery from `.zmetadata`
 - Remote `http://`, `https://`, and `s3://` stores when DuckDB `httpfs` is available and the store is consolidated
+- OME-Zarr-style multiscales groups built on Zarr v2, including level arrays such as `0`
 - Group enumeration from `.zgroup`
 - Array enumeration from `.zarray`
 - Chunk enumeration for both `.` and `/` dimension separators

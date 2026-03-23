@@ -116,3 +116,52 @@ FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
 WHERE dim_0 = 1;
 ----
 200
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr/%'
+FROM zarr_groups('test/data/ome_example.ome.zarr')
+ORDER BY group_path;
+----
+/	2	true
+
+query IIIIIIII
+SELECT
+    array_path,
+    rank,
+    shape::VARCHAR,
+    chunk_shape::VARCHAR,
+    dtype,
+    "order",
+    COALESCE(NULLIF(compressor, ''), '<none>'),
+    dimension_separator
+FROM zarr_arrays('test/data/ome_example.ome.zarr')
+ORDER BY array_path;
+----
+0	3	[2, 2, 3]	[1, 2, 2]	<u2	C	{"id":"gzip","level":1}	/
+
+query IIII
+SELECT dim_0, dim_1, dim_2, value
+FROM zarr_cells('test/data/ome_example.ome.zarr', '0')
+ORDER BY dim_0, dim_1, dim_2;
+----
+0	0	0	1
+0	0	1	2
+0	0	2	3
+0	1	0	4
+0	1	1	5
+0	1	2	6
+1	0	0	7
+1	0	1	8
+1	0	2	9
+1	1	0	10
+1	1	1	11
+1	1	2	12
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/ome_example.ome.zarr', '0')
+WHERE dim_1 = 1 AND dim_2 = 2
+ORDER BY dim_0;
+----
+0	6
+1	12
