@@ -1,19 +1,21 @@
-# duckdb_zarr: Relational Projection of Zarr for DuckDB via Arrow
+# duckdb_zarr: Relational Projection of Zarr for DuckDB
 
 ## Status
 Draft MVP specification.
 
 ## Summary
-duckdb_zarr is a DuckDB extension that exposes a relational projection over Zarr using Apache Arrow as the bridge.
+duckdb_zarr is a DuckDB extension that exposes a relational projection over Zarr for SQL analytics in DuckDB.
 
 ## Core Idea
-Zarr (chunked N-D arrays) → Arrow (columnar batches) → DuckDB (SQL)
+Zarr (chunked N-D arrays) -> relational projection -> DuckDB (SQL)
+
+Arrow remains a planned bridge for future execution improvements, but the current MVP decodes directly into DuckDB scan output.
 
 ## Goals
 - SQL over Zarr
-- Arrow as bridge
 - Chunk-aware filtering
 - Read-focused analytics
+- Ergonomic relational access to array data
 
 ## Non-Goals
 - Full xarray semantics
@@ -34,7 +36,11 @@ Each array → rows:
 - dimension filters → chunk pruning
 
 ## Execution Flow
-Zarr → decode → Arrow → DuckDB
+Current MVP:
+Zarr -> decode -> DuckDB table-function scan
+
+Planned evolution:
+Zarr -> decode -> Arrow/DuckDB batch bridge -> DuckDB
 
 ## MVP Scope
 - Dense arrays

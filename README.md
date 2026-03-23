@@ -152,7 +152,7 @@ The repository is still the standard DuckDB extension template, so the main comm
 - `make format-fix`: apply DuckDB formatting for `src/` and `test/`
 
 This repo also includes a pre-commit configuration in
-[`\.pre-commit-config.yaml`](/Users/buntend/Documents/work/duckdb_zarr/.pre-commit-config.yaml)
+[`\.pre-commit-config.yaml`](./.pre-commit-config.yaml)
 that runs the DuckDB formatter automatically before commits. The formatter wrapper depends on `clang-format`,
 and the current DuckDB script expects `clang-format==11.0.1`.
 

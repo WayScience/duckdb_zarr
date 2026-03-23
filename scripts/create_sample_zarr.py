@@ -23,6 +23,10 @@ def write_chunk(path: Path, payload: bytes) -> None:
     path.write_bytes(payload)
 
 
+def gzip_chunk(payload: bytes) -> bytes:
+    return gzip.compress(payload, compresslevel=1, mtime=0)
+
+
 def main() -> None:
     shutil.rmtree(STORE, ignore_errors=True)
     root_group = {"zarr_format": 2}
@@ -43,10 +47,10 @@ def main() -> None:
         STORE / "temperature" / ".zarray",
         temperature_array,
     )
-    write_chunk(STORE / "temperature" / "0.0", gzip.compress(struct.pack("<4d", 1.5, 2.5, 4.5, 5.5)))
-    write_chunk(STORE / "temperature" / "0.1", gzip.compress(struct.pack("<4d", 3.5, 0.0, 6.5, 0.0)))
-    write_chunk(STORE / "temperature" / "1.0", gzip.compress(struct.pack("<4d", 7.5, 8.5, 10.5, 11.5)))
-    write_chunk(STORE / "temperature" / "1.1", gzip.compress(struct.pack("<4d", 9.5, 0.0, 12.5, 0.0)))
+    write_chunk(STORE / "temperature" / "0.0", gzip_chunk(struct.pack("<4d", 1.5, 2.5, 4.5, 5.5)))
+    write_chunk(STORE / "temperature" / "0.1", gzip_chunk(struct.pack("<4d", 3.5, 0.0, 6.5, 0.0)))
+    write_chunk(STORE / "temperature" / "1.0", gzip_chunk(struct.pack("<4d", 7.5, 8.5, 10.5, 11.5)))
+    write_chunk(STORE / "temperature" / "1.1", gzip_chunk(struct.pack("<4d", 9.5, 0.0, 12.5, 0.0)))
 
     stations_group = {"zarr_format": 2}
     write_json(STORE / "stations" / ".zgroup", stations_group)
