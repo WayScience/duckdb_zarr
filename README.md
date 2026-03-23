@@ -141,6 +141,38 @@ If the published repository is hosted at the root of the GitHub Pages site, Duck
 https://<owner>.github.io/<repo>/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
 ```
 
+## Release Checklist
+
+To publish a new installable extension release from this repository:
+
+1. Ensure GitHub Pages is enabled for the repository and configured to deploy from GitHub Actions.
+2. Ensure the release workflow in
+   [`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
+   is enabled and passing on the default branch.
+3. Create and push a version tag such as `v0.1.0`.
+4. Wait for the publish workflow to:
+   - build the extension binaries
+   - package the DuckDB extension repository layout
+   - deploy the static repository to GitHub Pages
+5. Verify that a published artifact path exists, for example:
+   `https://<owner>.github.io/<repo>/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
+6. Optionally create a GitHub Release for human-readable notes. The installable path comes from the tag-triggered Pages workflow, not the Release object itself.
+
+After that, users can install the extension with:
+
+```sql
+SET custom_extension_repository='https://<owner>.github.io/<repo>';
+INSTALL duckdb_zarr;
+LOAD duckdb_zarr;
+```
+
+For remote Zarr stores, users may also need:
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+```
+
 ## Developer Workflow
 
 The repository is still the standard DuckDB extension template, so the main commands are unchanged:
