@@ -14,8 +14,8 @@
 #include "yyjson.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cstring>
+#include <limits>
 #include <tuple>
 
 namespace duckdb {
@@ -687,15 +687,16 @@ static bool TryParseInteger(const string &text, int64_t &value) {
 	if (text.empty()) {
 		return false;
 	}
+	int64_t parsed_value = 0;
 	for (auto ch : text) {
 		if (!StringUtil::CharacterIsDigit(ch)) {
 			return false;
 		}
-	}
-	int64_t parsed_value;
-	auto result = std::from_chars(text.data(), text.data() + text.size(), parsed_value);
-	if (result.ec != std::errc() || result.ptr != text.data() + text.size()) {
-		return false;
+		auto digit = NumericCast<int64_t>(ch - '0');
+		if (parsed_value > (std::numeric_limits<int64_t>::max() - digit) / 10) {
+			return false;
+		}
+		parsed_value = parsed_value * 10 + digit;
 	}
 	value = parsed_value;
 	return true;
