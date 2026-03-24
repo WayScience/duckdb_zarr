@@ -1307,23 +1307,7 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 
 static unique_ptr<FunctionData> BindZarr(ClientContext &context, TableFunctionBindInput &input,
                                          vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs.empty() || input.inputs[0].IsNull()) {
-		throw BinderException("zarr requires a non-NULL store path");
-	}
-	auto store_path = StringValue::Get(input.inputs[0]);
-	vector<ZarrGroupEntry> groups;
-	vector<ZarrArrayEntry> arrays;
-	vector<ZarrChunkEntry> chunks;
-	DiscoverStore(context, store_path, groups, arrays, chunks, false);
-	if (arrays.empty()) {
-		throw BinderException("zarr could not find any arrays in store: %s", store_path);
-	}
-	if (arrays.size() != 1) {
-		throw BinderException("zarr(path) requires exactly one array in the store; found %llu arrays in %s. Use "
-		                      "zarr(path, array_path) or zarr_cells(path, array_path) instead.",
-		                      arrays.size(), store_path);
-	}
-	return BindCellsInternal(context, store_path, arrays[0].array_path, return_types, names);
+	return BindArrays(context, input, return_types, names);
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
@@ -1455,11 +1439,7 @@ TableFunction ZarrMetadata::GetCellsFunction() {
 }
 
 TableFunction ZarrMetadata::GetZarrFunction() {
-	TableFunction function("zarr", {LogicalType::VARCHAR}, ScanCells, BindZarr, InitCells);
-	function.projection_pushdown = true;
-	function.filter_pushdown = true;
-	function.filter_prune = true;
-	return function;
+	return TableFunction("zarr", {LogicalType::VARCHAR}, ScanArrays, BindZarr, ZarrInit);
 }
 
 TableFunction ZarrMetadata::GetZarrCellsAliasFunction() {

@@ -10,7 +10,7 @@ The current implementation follows the project documents conservatively:
 
 Today’s extension provides metadata and relational scan table functions for local stores and a constrained remote read path:
 
-- `zarr(path)` for stores with exactly one array
+- `zarr(path)` for a simple array overview
 - `zarr(path, array_path)` as a convenience alias for `zarr_cells(path, array_path)`
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
@@ -110,7 +110,8 @@ SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
 SELECT * FROM zarr_arrays('test/data/simple_v2.zarr');
 SELECT * FROM zarr_chunks('test/data/simple_v2.zarr');
 SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
-SELECT * FROM zarr('test/data/ome_example.ome.zarr');
+SELECT * FROM zarr('test/data/simple_v2.zarr');
+SELECT * FROM zarr('test/data/ome_example.ome.zarr', '0');
 ```
 
 For remote stores in this phase, the practical contract is:
@@ -121,51 +122,50 @@ For remote stores in this phase, the practical contract is:
 
 ## Install Like An Extension
 
-This repo now includes a GitHub Pages publishing workflow in
+This repo now includes a branch-backed publishing workflow in
 [`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
-that packages CI build artifacts into DuckDB's static extension repository layout.
+that packages CI build artifacts into DuckDB's static extension repository layout and pushes them to the
+`extension-repository` branch.
 
 To make this work for your repository:
 
-- enable GitHub Pages in the repository settings
 - push a version tag such as `v0.1.0`
-- let the publish workflow build binaries and deploy the static repository
+- let the publish workflow build binaries and publish the static repository branch
 
 Then users can point DuckDB at that repository URL:
 
 ```sql
-SET custom_extension_repository='https://d33bs.github.io/duckdb_zarr';
+SET custom_extension_repository='https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository';
 INSTALL duckdb_zarr;
 LOAD duckdb_zarr;
 ```
 
-If the published repository is hosted at the root of the GitHub Pages site, DuckDB will resolve binaries under paths like:
+DuckDB will resolve binaries under paths like:
 
 ```text
-https://d33bs.github.io/duckdb_zarr/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
+https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
 ```
 
 ## Release Checklist
 
 To publish a new installable extension release from this repository:
 
-1. Ensure GitHub Pages is enabled for the repository and configured to deploy from GitHub Actions.
-2. Ensure the release workflow in
+1. Ensure the release workflow in
    [`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
    is enabled and passing on the default branch.
-3. Create and push a version tag such as `v0.1.0`.
-4. Wait for the publish workflow to:
+2. Create and push a version tag such as `v0.1.0`.
+3. Wait for the publish workflow to:
    - build the extension binaries
    - package the DuckDB extension repository layout
-   - deploy the static repository to GitHub Pages
-5. Verify that a published artifact path exists, for example:
-   `https://d33bs.github.io/duckdb_zarr/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
-6. Optionally create a GitHub Release for human-readable notes. The installable path comes from the tag-triggered Pages workflow, not the Release object itself.
+   - push the static repository contents to the `extension-repository` branch
+4. Verify that a published artifact path exists, for example:
+   `https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
+5. Optionally create a GitHub Release for human-readable notes. The installable path comes from the tag-triggered publish workflow, not the Release object itself.
 
 After that, users can install the extension with:
 
 ```sql
-SET custom_extension_repository='https://d33bs.github.io/duckdb_zarr';
+SET custom_extension_repository='https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository';
 INSTALL duckdb_zarr;
 LOAD duckdb_zarr;
 ```

@@ -10,12 +10,10 @@ env:
   DUCKDB_VERSION: v1.5.0
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: extension-pages
+  group: extension-repository
   cancel-in-progress: false
 
 jobs:
@@ -34,8 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/configure-pages@v5
-
       - uses: actions/download-artifact@v4
         with:
           pattern: duckdb_zarr-${{ env.DUCKDB_VERSION }}-extension-*
@@ -50,17 +46,23 @@ jobs:
             --extension-name duckdb_zarr \
             --duckdb-version ${{ env.DUCKDB_VERSION }}
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: build/extension-repository
+      - name: Publish repository branch
+        env:
+          TARGET_BRANCH: extension-repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  deploy-pages:
-    name: Deploy extension repository
-    runs-on: ubuntu-latest
-    needs: package-repository
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          rm -rf build/repository-branch
+          mkdir -p build/repository-branch
+          cp -R build/extension-repository/. build/repository-branch/
+
+          touch build/repository-branch/.nojekyll
+
+          cd build/repository-branch
+          git init
+          git checkout -b "${TARGET_BRANCH}"
+          git add .
+          git commit -m "Publish extension repository for ${GITHUB_REF_NAME}"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin "${TARGET_BRANCH}"
