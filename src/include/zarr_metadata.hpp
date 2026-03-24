@@ -10,6 +10,8 @@ public:
 	static TableFunction GetArraysFunction();
 	static TableFunction GetChunksFunction();
 	static TableFunction GetCellsFunction();
+	static TableFunction GetZarrFunction();
+	static TableFunction GetZarrCellsAliasFunction();
 };
 
 } // namespace duckdb

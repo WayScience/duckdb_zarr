@@ -72,6 +72,14 @@ ORDER BY dim_0;
 0	100
 1	200
 
+query II
+SELECT dim_0, value
+FROM zarr('test/data/simple_v2.zarr', 'stations/elevation')
+ORDER BY dim_0;
+----
+0	100
+1	200
+
 query III
 SELECT dim_0, dim_1, value::DOUBLE
 FROM zarr_cells('test/data/simple_v2.zarr', 'half_precision')
@@ -206,3 +214,17 @@ ORDER BY dim_0;
 ----
 0	6
 1	12
+
+query II
+SELECT dim_0, value
+FROM zarr('test/data/ome_example.ome.zarr')
+WHERE dim_1 = 1 AND dim_2 = 2
+ORDER BY dim_0;
+----
+0	6
+1	12
+
+statement error
+SELECT * FROM zarr('test/data/simple_v2.zarr');
+----
+Binder Error: zarr(path) requires exactly one array in the store; found 5 arrays in test/data/simple_v2.zarr. Use zarr(path, array_path) or zarr_cells(path, array_path) instead.

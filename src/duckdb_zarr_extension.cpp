@@ -14,6 +14,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ZarrMetadata::GetArraysFunction());
 	loader.RegisterFunction(ZarrMetadata::GetChunksFunction());
 	loader.RegisterFunction(ZarrMetadata::GetCellsFunction());
+	loader.RegisterFunction(ZarrMetadata::GetZarrFunction());
+	loader.RegisterFunction(ZarrMetadata::GetZarrCellsAliasFunction());
 }
 
 void DuckdbZarrExtension::Load(ExtensionLoader &loader) {

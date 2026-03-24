@@ -10,6 +10,8 @@ The current implementation follows the project documents conservatively:
 
 Today’s extension provides metadata and relational scan table functions for local stores and a constrained remote read path:
 
+- `zarr(path)` for stores with exactly one array
+- `zarr(path, array_path)` as a convenience alias for `zarr_cells(path, array_path)`
 - `zarr_groups(path)`
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
@@ -108,6 +110,7 @@ SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
 SELECT * FROM zarr_arrays('test/data/simple_v2.zarr');
 SELECT * FROM zarr_chunks('test/data/simple_v2.zarr');
 SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
+SELECT * FROM zarr('test/data/ome_example.ome.zarr');
 ```
 
 For remote stores in this phase, the practical contract is:
