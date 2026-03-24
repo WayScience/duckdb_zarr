@@ -122,28 +122,28 @@ For remote stores in this phase, the practical contract is:
 
 ## Install Like An Extension
 
-This repo now includes a branch-backed publishing workflow in
+This repo now includes a release-asset publishing workflow in
 [`PublishExtensionRepository.yml`](./.github/workflows/PublishExtensionRepository.yml)
-that packages CI build artifacts into DuckDB's static extension repository layout and pushes them to the
-`extension-repository` branch.
+that builds extension binaries on version tags and attaches platform-specific
+`.duckdb_extension.gz` assets to the matching GitHub Release.
 
 To make this work for your repository:
 
 - push a version tag such as `v0.1.0`
-- let the publish workflow build binaries and publish the static repository branch
+- create the matching GitHub Release, or let the workflow create/update it from the tag
 
-Then users can point DuckDB at that repository URL:
+Then users can install directly from a release asset URL:
 
 ```sql
-SET custom_extension_repository='https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository';
-INSTALL duckdb_zarr;
+INSTALL 'https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
 LOAD duckdb_zarr;
 ```
 
-DuckDB will resolve binaries under paths like:
+Each release publishes assets named like:
 
 ```text
-https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz
+duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz
+duckdb_zarr-v1.5.0-linux_amd64.duckdb_extension.gz
 ```
 
 ## Release Checklist
@@ -156,17 +156,16 @@ To publish a new installable extension release from this repository:
 2. Create and push a version tag such as `v0.1.0`.
 3. Wait for the publish workflow to:
    - build the extension binaries
-   - package the DuckDB extension repository layout
-   - push the static repository contents to the `extension-repository` branch
+   - package platform-specific `.duckdb_extension.gz` assets
+   - upload those assets to the matching GitHub Release
 4. Verify that a published artifact path exists, for example:
-   `https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository/v1.5.0/osx_arm64/duckdb_zarr.duckdb_extension.gz`
-5. Optionally create a GitHub Release for human-readable notes. The installable path comes from the tag-triggered publish workflow, not the Release object itself.
+   `https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz`
+5. Optionally add human-readable release notes. The installable path is the GitHub Release asset itself.
 
 After that, users can install the extension with:
 
 ```sql
-SET custom_extension_repository='https://raw.githubusercontent.com/d33bs/duckdb_zarr/extension-repository';
-INSTALL duckdb_zarr;
+INSTALL 'https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
 LOAD duckdb_zarr;
 ```
 
