@@ -1203,8 +1203,8 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 	vector<ZarrChunkEntry> chunks;
 	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, false)) {
 		if (FileSystem::IsRemoteFile(path)) {
-			throw InvalidInputException(
-			    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+			throw InvalidInputException("Remote Zarr stores currently require consolidated metadata (.zmetadata): %s",
+			                            store_path);
 		}
 		if (!fs.DirectoryExists(store_path)) {
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
@@ -1224,8 +1224,8 @@ static void DiscoverStore(ClientContext &context, const string &path, vector<Zar
 	auto store_path = NormalizeStorePath(fs, path);
 	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, collect_chunks)) {
 		if (FileSystem::IsRemoteFile(path)) {
-			throw InvalidInputException(
-			    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+			throw InvalidInputException("Remote Zarr stores currently require consolidated metadata (.zmetadata): %s",
+			                            store_path);
 		}
 		if (!fs.DirectoryExists(store_path)) {
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
