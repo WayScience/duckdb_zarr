@@ -53,6 +53,49 @@ def create_simple_store() -> None:
     write_chunk(STORE / "temperature" / "1.0", gzip_chunk(struct.pack("<4d", 7.5, 8.5, 10.5, 11.5)))
     write_chunk(STORE / "temperature" / "1.1", gzip_chunk(struct.pack("<4d", 9.5, 0.0, 12.5, 0.0)))
 
+    mask_array = {
+        "chunks": [2, 2],
+        "compressor": None,
+        "dtype": "|b1",
+        "fill_value": False,
+        "filters": None,
+        "order": "C",
+        "shape": [2, 3],
+        "zarr_format": 2,
+        "dimension_separator": ".",
+    }
+    write_json(STORE / "mask" / ".zarray", mask_array)
+    write_chunk(STORE / "mask" / "0.0", bytes([1, 0, 1, 1]))
+    write_chunk(STORE / "mask" / "0.1", bytes([0, 0, 1, 0]))
+
+    half_array = {
+        "chunks": [2, 2],
+        "compressor": None,
+        "dtype": "<f2",
+        "fill_value": None,
+        "filters": None,
+        "order": "C",
+        "shape": [2, 2],
+        "zarr_format": 2,
+        "dimension_separator": ".",
+    }
+    write_json(STORE / "half_precision" / ".zarray", half_array)
+    write_chunk(STORE / "half_precision" / "0.0", struct.pack("<4e", 1.5, -2.0, 0.5, 4.0))
+
+    sparse_fill_array = {
+        "chunks": [2, 2],
+        "compressor": None,
+        "dtype": "<i4",
+        "fill_value": -1,
+        "filters": None,
+        "order": "C",
+        "shape": [2, 3],
+        "zarr_format": 2,
+        "dimension_separator": ".",
+    }
+    write_json(STORE / "sparse_fill" / ".zarray", sparse_fill_array)
+    write_chunk(STORE / "sparse_fill" / "0.0", struct.pack("<4i", 1, 2, 4, 5))
+
     stations_group = {"zarr_format": 2}
     write_json(STORE / "stations" / ".zgroup", stations_group)
     elevation_array = {
@@ -78,6 +121,9 @@ def create_simple_store() -> None:
             "zarr_consolidated_format": 1,
             "metadata": {
                 ".zgroup": root_group,
+                "half_precision/.zarray": half_array,
+                "mask/.zarray": mask_array,
+                "sparse_fill/.zarray": sparse_fill_array,
                 "temperature/.zarray": temperature_array,
                 "stations/.zgroup": stations_group,
                 "stations/elevation/.zarray": elevation_array,

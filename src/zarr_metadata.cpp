@@ -39,6 +39,7 @@ struct ZarrArrayEntry {
 	string dtype;
 	string order;
 	string compressor;
+	string fill_value;
 	string dimension_separator;
 	string metadata_path;
 };
@@ -50,6 +51,7 @@ struct ZarrChunkEntry {
 	vector<int64_t> chunk_coords;
 	string file_path;
 	int64_t file_size_bytes;
+	bool present;
 };
 
 struct ZarrNumericType {
@@ -58,6 +60,7 @@ struct ZarrNumericType {
 	bool is_float;
 	bool is_signed;
 	bool is_unsigned;
+	bool is_boolean;
 	bool little_endian;
 };
 
@@ -87,6 +90,8 @@ struct ZarrCellsGlobalState : public GlobalTableFunctionState {
 	unique_ptr<TableFilterSet> filters;
 	vector<idx_t> chunk_indexes;
 	ZarrNumericType dtype;
+	Value fill_value;
+	bool has_fill_value = false;
 	idx_t chunk_element_count = 0;
 	idx_t expected_chunk_bytes = 0;
 	idx_t next_chunk_offset = 0;
@@ -260,6 +265,7 @@ static ZarrNumericType ParseNumericDType(const string &dtype) {
 	result.is_float = false;
 	result.is_signed = false;
 	result.is_unsigned = false;
+	result.is_boolean = false;
 	switch (endian) {
 	case '<':
 		result.little_endian = true;
@@ -320,9 +326,20 @@ static ZarrNumericType ParseNumericDType(const string &dtype) {
 		}
 		return result;
 	}
+	if (kind == 'b') {
+		result.is_boolean = true;
+		if (width != 1) {
+			throw InvalidInputException("Unsupported boolean dtype: %s", dtype);
+		}
+		result.logical_type = LogicalType::BOOLEAN;
+		return result;
+	}
 	if (kind == 'f') {
 		result.is_float = true;
 		switch (width) {
+		case 2:
+			result.logical_type = LogicalType::FLOAT;
+			break;
 		case 4:
 			result.logical_type = LogicalType::FLOAT;
 			break;
@@ -335,6 +352,38 @@ static ZarrNumericType ParseNumericDType(const string &dtype) {
 		return result;
 	}
 	throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
+}
+
+static float DecodeFloat16(uint16_t half_bits) {
+	auto sign = (half_bits >> 15) & 0x1;
+	auto exponent = (half_bits >> 10) & 0x1f;
+	auto mantissa = half_bits & 0x3ff;
+
+	uint32_t float_bits;
+	if (exponent == 0) {
+		if (mantissa == 0) {
+			float_bits = NumericCast<uint32_t>(sign) << 31;
+		} else {
+			exponent = 1;
+			while ((mantissa & 0x400) == 0) {
+				mantissa <<= 1;
+				exponent--;
+			}
+			mantissa &= 0x3ff;
+			auto float_exponent = NumericCast<uint32_t>(exponent + (127 - 15));
+			float_bits = (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) |
+			             (NumericCast<uint32_t>(mantissa) << 13);
+		}
+	} else if (exponent == 0x1f) {
+		float_bits = (NumericCast<uint32_t>(sign) << 31) | 0x7f800000U | (NumericCast<uint32_t>(mantissa) << 13);
+	} else {
+		auto float_exponent = NumericCast<uint32_t>(exponent + (127 - 15));
+		float_bits = (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) |
+		             (NumericCast<uint32_t>(mantissa) << 13);
+	}
+	float value;
+	std::memcpy(&value, &float_bits, sizeof(value));
+	return value;
 }
 
 static uint64_t ReadUnsignedInteger(const char *ptr, idx_t bytes, bool little_endian) {
@@ -366,7 +415,14 @@ static int64_t ReadSignedInteger(const char *ptr, idx_t bytes, bool little_endia
 }
 
 static Value DecodeNumericValue(const char *ptr, const ZarrNumericType &dtype) {
+	if (dtype.is_boolean) {
+		return Value::BOOLEAN(static_cast<unsigned char>(ptr[0]) != 0);
+	}
 	if (dtype.is_float) {
+		if (dtype.element_size == 2) {
+			auto bits = NumericCast<uint16_t>(ReadUnsignedInteger(ptr, dtype.element_size, dtype.little_endian));
+			return Value::FLOAT(DecodeFloat16(bits));
+		}
 		if (dtype.element_size == sizeof(float)) {
 			auto bits = NumericCast<uint32_t>(ReadUnsignedInteger(ptr, dtype.element_size, dtype.little_endian));
 			float value;
@@ -452,6 +508,100 @@ static vector<char> DecompressChunk(const vector<char> &compressed_data, const s
 	MiniZStream stream;
 	stream.Decompress(compressed_data.data(), compressed_data.size(), decompressed.data(), decompressed.size());
 	return decompressed;
+}
+
+static bool HasMaterializedFillValue(const ZarrArrayEntry &array) {
+	return !array.fill_value.empty() && array.fill_value != "null";
+}
+
+static Value ParseFillValue(const ZarrArrayEntry &array, const ZarrNumericType &dtype) {
+	if (!HasMaterializedFillValue(array)) {
+		return Value();
+	}
+	unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)> doc(
+	    yyjson_read(array.fill_value.c_str(), array.fill_value.size(), 0), yyjson_doc_free);
+	if (!doc) {
+		throw InvalidInputException("Failed to parse Zarr fill_value for array: %s", array.array_path);
+	}
+	auto root = yyjson_doc_get_root(doc.get());
+	if (yyjson_is_null(root)) {
+		return Value();
+	}
+	if (dtype.is_boolean) {
+		if (yyjson_is_bool(root)) {
+			return Value::BOOLEAN(yyjson_get_bool(root));
+		}
+		if (yyjson_is_uint(root)) {
+			return Value::BOOLEAN(unsafe_yyjson_get_uint(root) != 0);
+		}
+		if (yyjson_is_sint(root)) {
+			return Value::BOOLEAN(unsafe_yyjson_get_sint(root) != 0);
+		}
+		throw InvalidInputException("Unsupported boolean fill_value for array: %s", array.array_path);
+	}
+	if (dtype.is_float) {
+		double fill_value;
+		if (yyjson_is_real(root)) {
+			fill_value = unsafe_yyjson_get_real(root);
+		} else if (yyjson_is_uint(root)) {
+			fill_value = static_cast<double>(unsafe_yyjson_get_uint(root));
+		} else if (yyjson_is_sint(root)) {
+			fill_value = static_cast<double>(unsafe_yyjson_get_sint(root));
+		} else {
+			throw InvalidInputException("Unsupported floating-point fill_value for array: %s", array.array_path);
+		}
+		return dtype.element_size == 8 ? Value::DOUBLE(fill_value) : Value::FLOAT(static_cast<float>(fill_value));
+	}
+	if (dtype.is_signed) {
+		int64_t fill_value;
+		if (yyjson_is_sint(root)) {
+			fill_value = unsafe_yyjson_get_sint(root);
+		} else if (yyjson_is_uint(root)) {
+			fill_value = NumericCast<int64_t>(unsafe_yyjson_get_uint(root));
+		} else {
+			throw InvalidInputException("Unsupported signed integer fill_value for array: %s", array.array_path);
+		}
+		switch (dtype.element_size) {
+		case 1:
+			return Value::TINYINT(NumericCast<int8_t>(fill_value));
+		case 2:
+			return Value::SMALLINT(NumericCast<int16_t>(fill_value));
+		case 4:
+			return Value::INTEGER(NumericCast<int32_t>(fill_value));
+		case 8:
+			return Value::BIGINT(fill_value);
+		default:
+			break;
+		}
+	}
+	if (dtype.is_unsigned) {
+		uint64_t fill_value;
+		if (yyjson_is_uint(root)) {
+			fill_value = unsafe_yyjson_get_uint(root);
+		} else if (yyjson_is_sint(root)) {
+			auto signed_value = unsafe_yyjson_get_sint(root);
+			if (signed_value < 0) {
+				throw InvalidInputException("Unsigned integer fill_value cannot be negative for array: %s",
+				                            array.array_path);
+			}
+			fill_value = NumericCast<uint64_t>(signed_value);
+		} else {
+			throw InvalidInputException("Unsupported unsigned integer fill_value for array: %s", array.array_path);
+		}
+		switch (dtype.element_size) {
+		case 1:
+			return Value::UTINYINT(NumericCast<uint8_t>(fill_value));
+		case 2:
+			return Value::USMALLINT(NumericCast<uint16_t>(fill_value));
+		case 4:
+			return Value::UINTEGER(NumericCast<uint32_t>(fill_value));
+		case 8:
+			return Value::UBIGINT(fill_value);
+		default:
+			break;
+		}
+	}
+	throw InvalidInputException("Unsupported fill_value type for array: %s", array.array_path);
 }
 
 static const ZarrArrayEntry &FindArrayEntry(const vector<ZarrArrayEntry> &arrays, const string &array_path) {
@@ -674,8 +824,12 @@ static bool LoadNextChunk(FileSystem &fs, const ZarrCellsBindData &bind_data, Za
 		state.current_chunk_index = state.chunk_indexes[state.next_chunk_offset++];
 		state.current_linear_index = 0;
 		auto &chunk = bind_data.chunks[state.current_chunk_index];
-		auto raw_data = ReadBinaryFile(fs, chunk.file_path);
-		state.decoded_chunk = DecompressChunk(raw_data, bind_data.array.compressor, state.expected_chunk_bytes);
+		if (chunk.present) {
+			auto raw_data = ReadBinaryFile(fs, chunk.file_path);
+			state.decoded_chunk = DecompressChunk(raw_data, bind_data.array.compressor, state.expected_chunk_bytes);
+		} else {
+			state.decoded_chunk.clear();
+		}
 		return true;
 	}
 	state.current_chunk_index = DConstants::INVALID_INDEX;
@@ -740,7 +894,7 @@ static void CollectSlashChunks(FileSystem &fs, const ZarrArrayEntry &array, cons
 		}
 		auto handle = fs.OpenFile(child_path, FileFlags::FILE_FLAGS_READ);
 		entries.push_back({array.store_path, array.array_path, next_key, std::move(coords), child_path,
-		                   NumericCast<int64_t>(handle->GetFileSize())});
+		                   NumericCast<int64_t>(handle->GetFileSize()), true});
 	});
 }
 
@@ -763,7 +917,7 @@ static void CollectDotChunks(FileSystem &fs, const ZarrArrayEntry &array, const 
 		}
 		auto handle = fs.OpenFile(child_path, FileFlags::FILE_FLAGS_READ);
 		entries.push_back({array.store_path, array.array_path, child_name, std::move(coords), child_path,
-		                   NumericCast<int64_t>(handle->GetFileSize())});
+		                   NumericCast<int64_t>(handle->GetFileSize()), true});
 	});
 }
 
@@ -856,6 +1010,7 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
 	}
 	auto compressor = JsonToString(yyjson_obj_get(root, "compressor"));
+	auto fill_value = JsonToString(yyjson_obj_get(root, "fill_value"));
 	auto dimension_separator = OptionalString(root, "dimension_separator", ".");
 	auto shape = RequireInt64Array(root, "shape");
 	auto chunks = RequireInt64Array(root, "chunks");
@@ -880,6 +1035,7 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 	        OptionalString(root, "dtype"),
 	        OptionalString(root, "order"),
 	        std::move(compressor),
+	        std::move(fill_value),
 	        std::move(dimension_separator),
 	        metadata_path};
 }
@@ -923,30 +1079,35 @@ static string ChunkPath(const string &store_path, const string &array_path, cons
 }
 
 static void GenerateChunkEntriesRecursive(FileSystem &fs, const string &store_path, const ZarrArrayEntry &array,
-                                          vector<int64_t> &coords, idx_t dim, vector<ZarrChunkEntry> &chunks) {
+                                          vector<int64_t> &coords, idx_t dim, bool include_missing,
+                                          vector<ZarrChunkEntry> &chunks) {
 	if (dim == coords.size()) {
 		auto chunk_key = ChunkKeyFromCoords(coords, array.dimension_separator);
 		auto file_path = ChunkPath(store_path, array.array_path, chunk_key);
-		if (!fs.FileExists(file_path)) {
+		auto file_exists = fs.FileExists(file_path);
+		if (!file_exists && !include_missing) {
 			return;
 		}
-		auto handle = fs.OpenFile(file_path, FileFlags::FILE_FLAGS_READ);
-		chunks.push_back(
-		    {store_path, array.array_path, chunk_key, coords, file_path, NumericCast<int64_t>(handle->GetFileSize())});
+		int64_t file_size = 0;
+		if (file_exists) {
+			auto handle = fs.OpenFile(file_path, FileFlags::FILE_FLAGS_READ);
+			file_size = NumericCast<int64_t>(handle->GetFileSize());
+		}
+		chunks.push_back({store_path, array.array_path, chunk_key, coords, file_path, file_size, file_exists});
 		return;
 	}
 	auto chunk_count = (array.shape[dim] + array.chunks[dim] - 1) / array.chunks[dim];
 	for (int64_t chunk_coord = 0; chunk_coord < chunk_count; chunk_coord++) {
 		coords[dim] = chunk_coord;
-		GenerateChunkEntriesRecursive(fs, store_path, array, coords, dim + 1, chunks);
+		GenerateChunkEntriesRecursive(fs, store_path, array, coords, dim + 1, include_missing, chunks);
 	}
 }
 
 static vector<ZarrChunkEntry> GenerateChunkEntries(FileSystem &fs, const string &store_path,
-                                                   const ZarrArrayEntry &array) {
+                                                   const ZarrArrayEntry &array, bool include_missing = false) {
 	vector<ZarrChunkEntry> chunks;
 	vector<int64_t> coords(NumericCast<idx_t>(array.rank), 0);
-	GenerateChunkEntriesRecursive(fs, store_path, array, coords, 0, chunks);
+	GenerateChunkEntriesRecursive(fs, store_path, array, coords, 0, include_missing, chunks);
 	return chunks;
 }
 
@@ -1126,7 +1287,8 @@ static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionB
 	DiscoverStore(context, store_path, groups, arrays, chunks, false);
 	auto &array = FindArrayEntry(arrays, array_path);
 	auto dtype = ParseNumericDType(array.dtype);
-	chunks = GenerateChunkEntries(FileSystem::GetFileSystem(context), array.store_path, array);
+	chunks = GenerateChunkEntries(FileSystem::GetFileSystem(context), array.store_path, array,
+	                             HasMaterializedFillValue(array));
 
 	names.reserve(array.rank + 1);
 	return_types.reserve(array.rank + 1);
@@ -1213,8 +1375,13 @@ static void ScanCells(ClientContext &context, TableFunctionInput &data_p, DataCh
 			if (!ComputeGlobalCoords(linear_index, bind_data.array, chunk, global_coords)) {
 				continue;
 			}
-			auto value_ptr = state.decoded_chunk.data() + (linear_index * state.dtype.element_size);
-			auto cell_value = DecodeNumericValue(value_ptr, state.dtype);
+			Value cell_value;
+			if (chunk.present) {
+				auto value_ptr = state.decoded_chunk.data() + (linear_index * state.dtype.element_size);
+				cell_value = DecodeNumericValue(value_ptr, state.dtype);
+			} else {
+				cell_value = state.fill_value;
+			}
 			if (!RowMatchesFilters(state.filters.get(), state.column_ids, global_coords, cell_value,
 			                       NumericCast<idx_t>(bind_data.array.rank))) {
 				continue;
@@ -1234,6 +1401,10 @@ static unique_ptr<GlobalTableFunctionState> InitCells(ClientContext &context, Ta
 	result->filters = input.filters ? input.filters->Copy() : nullptr;
 	result->chunk_indexes = SelectFilteredChunks(bind_data.array, bind_data.chunks, input.filters, input.column_ids);
 	result->dtype = ParseNumericDType(bind_data.array.dtype);
+	result->has_fill_value = HasMaterializedFillValue(bind_data.array);
+	if (result->has_fill_value) {
+		result->fill_value = ParseFillValue(bind_data.array, result->dtype);
+	}
 	result->chunk_element_count = Product(bind_data.array.chunks);
 	result->expected_chunk_bytes = result->chunk_element_count * result->dtype.element_size;
 	return std::move(result);

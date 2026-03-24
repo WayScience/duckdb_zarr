@@ -38,8 +38,11 @@ SELECT
 FROM zarr_arrays('test/data/simple_v2.zarr')
 ORDER BY array_path;
 ----
-stations/elevation	1	[2]	[2]	<i4	C	<none>	/	true
-temperature	2	[4, 3]	[2, 2]	<f8	C	{"id":"gzip","level":1}	.	true
+half_precision	2	[2, 2]	[2, 2]	<f2	C	<none>	.	1
+mask	2	[2, 3]	[2, 2]	|b1	C	<none>	.	1
+sparse_fill	2	[2, 3]	[2, 2]	<i4	C	<none>	.	1
+stations/elevation	1	[2]	[2]	<i4	C	<none>	/	1
+temperature	2	[4, 3]	[2, 2]	<f8	C	{"id":"gzip","level":1}	.	1
 
 query IIIII
 SELECT
@@ -51,6 +54,10 @@ SELECT
 FROM zarr_chunks('test/data/simple_v2.zarr')
 ORDER BY array_path, chunk_key;
 ----
+half_precision	0.0	[0, 0]	1	1
+mask	0.0	[0, 0]	1	1
+mask	0.1	[0, 1]	1	1
+sparse_fill	0.0	[0, 0]	1	1
 stations/elevation	0	[0]	1	1
 temperature	0.0	[0, 0]	1	1
 temperature	0.1	[0, 1]	1	1
@@ -64,6 +71,40 @@ ORDER BY dim_0;
 ----
 0	100
 1	200
+
+query III
+SELECT dim_0, dim_1, value::DOUBLE
+FROM zarr_cells('test/data/simple_v2.zarr', 'half_precision')
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	-2.0
+1	0	0.5
+1	1	4.0
+
+query III
+SELECT dim_0, dim_1, CASE WHEN value THEN 1 ELSE 0 END
+FROM zarr_cells('test/data/simple_v2.zarr', 'mask')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	0
+0	2	0
+1	0	1
+1	1	1
+1	2	1
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'sparse_fill')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	2
+0	2	-1
+1	0	4
+1	1	5
+1	2	-1
 
 query III
 SELECT dim_0, dim_1, value
