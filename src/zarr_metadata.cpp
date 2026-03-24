@@ -383,15 +383,15 @@ static float DecodeFloat16(uint16_t half_bits) {
 			}
 			mantissa &= 0x3ff;
 			auto float_exponent = NumericCast<uint32_t>(exponent + (127 - 15));
-			float_bits = (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) |
-			             (NumericCast<uint32_t>(mantissa) << 13);
+			float_bits =
+			    (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) | (NumericCast<uint32_t>(mantissa) << 13);
 		}
 	} else if (exponent == 0x1f) {
 		float_bits = (NumericCast<uint32_t>(sign) << 31) | 0x7f800000U | (NumericCast<uint32_t>(mantissa) << 13);
 	} else {
 		auto float_exponent = NumericCast<uint32_t>(exponent + (127 - 15));
-		float_bits = (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) |
-		             (NumericCast<uint32_t>(mantissa) << 13);
+		float_bits =
+		    (NumericCast<uint32_t>(sign) << 31) | (float_exponent << 23) | (NumericCast<uint32_t>(mantissa) << 13);
 	}
 	float value;
 	std::memcpy(&value, &float_bits, sizeof(value));
@@ -1311,7 +1311,7 @@ static unique_ptr<FunctionData> BindCellsInternal(ClientContext &context, const 
 	auto &array = FindArrayEntry(arrays, array_path);
 	auto dtype = ParseNumericDType(array.dtype);
 	chunks = GenerateChunkEntries(FileSystem::GetFileSystem(context), array.store_path, array,
-	                             HasMaterializedFillValue(array));
+	                              HasMaterializedFillValue(array));
 
 	names.reserve(array.rank + 1);
 	return_types.reserve(array.rank + 1);
