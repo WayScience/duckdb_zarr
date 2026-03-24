@@ -227,7 +227,11 @@ static idx_t Product(const vector<int64_t> &values) {
 		if (value < 0) {
 			throw InvalidInputException("Negative Zarr dimensions are not supported");
 		}
-		result *= NumericCast<idx_t>(value);
+		auto cast_value = NumericCast<idx_t>(value);
+		if (cast_value != 0 && result > std::numeric_limits<idx_t>::max() / cast_value) {
+			throw InvalidInputException("Zarr dimension product overflow");
+		}
+		result *= cast_value;
 	}
 	return result;
 }
@@ -260,7 +264,15 @@ static ZarrNumericType ParseNumericDType(const string &dtype) {
 	ZarrNumericType result;
 	auto endian = dtype[0];
 	auto kind = dtype[1];
-	auto width = std::stoll(dtype.substr(2));
+	int64_t width;
+	try {
+		width = std::stoll(dtype.substr(2));
+	} catch (const std::exception &) {
+		throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
+	}
+	if (width <= 0) {
+		throw InvalidInputException("Unsupported Zarr dtype: %s", dtype);
+	}
 	result.element_size = NumericCast<idx_t>(width);
 	result.is_float = false;
 	result.is_signed = false;
@@ -996,12 +1008,20 @@ static vector<Value> ToBigIntValues(const vector<int64_t> &values) {
 	return result;
 }
 
+static int64_t RequireZarrFormatV2(yyjson_val *root, const string &metadata_path) {
+	auto zarr_format = RequireInt64(root, "zarr_format");
+	if (zarr_format != 2) {
+		throw InvalidInputException("Only Zarr v2 metadata is currently supported: %s", metadata_path);
+	}
+	return zarr_format;
+}
+
 static ZarrGroupEntry ParseGroupMetadata(yyjson_val *root, const string &store_path, const string &relative_path,
                                          const string &metadata_path) {
 	if (!yyjson_is_obj(root)) {
 		throw InvalidInputException("%s does not contain a JSON object", metadata_path);
 	}
-	return {store_path, FormatGroupPath(relative_path), RequireInt64(root, "zarr_format"), metadata_path};
+	return {store_path, FormatGroupPath(relative_path), RequireZarrFormatV2(root, metadata_path), metadata_path};
 }
 
 static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &store_path, const string &relative_path,
@@ -1012,6 +1032,10 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 	auto compressor = JsonToString(yyjson_obj_get(root, "compressor"));
 	auto fill_value = JsonToString(yyjson_obj_get(root, "fill_value"));
 	auto dimension_separator = OptionalString(root, "dimension_separator", ".");
+	if (dimension_separator != "." && dimension_separator != "/") {
+		throw InvalidInputException("Unsupported Zarr dimension_separator in %s: %s", metadata_path,
+		                            dimension_separator);
+	}
 	auto shape = RequireInt64Array(root, "shape");
 	auto chunks = RequireInt64Array(root, "chunks");
 	if (shape.size() != chunks.size()) {
@@ -1026,14 +1050,19 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 		}
 	}
 
+	auto order = OptionalString(root, "order");
+	if (order != "C" && order != "F") {
+		throw InvalidInputException("Unsupported Zarr order in %s: %s", metadata_path, order);
+	}
+
 	return {store_path,
 	        relative_path,
-	        RequireInt64(root, "zarr_format"),
+	        RequireZarrFormatV2(root, metadata_path),
 	        NumericCast<int64_t>(shape.size()),
 	        std::move(shape),
 	        std::move(chunks),
 	        OptionalString(root, "dtype"),
-	        OptionalString(root, "order"),
+	        std::move(order),
 	        std::move(compressor),
 	        std::move(fill_value),
 	        std::move(dimension_separator),
@@ -1173,11 +1202,11 @@ static vector<ZarrGroupEntry> DiscoverGroups(ClientContext &context, const strin
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
 	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, false)) {
+		if (FileSystem::IsRemoteFile(path)) {
+			throw InvalidInputException(
+			    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+		}
 		if (!fs.DirectoryExists(store_path)) {
-			if (FileSystem::IsRemoteFile(path)) {
-				throw InvalidInputException(
-				    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
-			}
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
 		}
 		TraverseStore(fs, store_path, store_path, "", false, groups, arrays, chunks);
@@ -1194,11 +1223,11 @@ static void DiscoverStore(ClientContext &context, const string &path, vector<Zar
 	EnsureRemoteFilesystemSupport(context, path);
 	auto store_path = NormalizeStorePath(fs, path);
 	if (!DiscoverConsolidatedStore(fs, store_path, groups, arrays, chunks, collect_chunks)) {
+		if (FileSystem::IsRemoteFile(path)) {
+			throw InvalidInputException(
+			    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
+		}
 		if (!fs.DirectoryExists(store_path)) {
-			if (FileSystem::IsRemoteFile(path)) {
-				throw InvalidInputException(
-				    "Remote Zarr stores currently require consolidated metadata (.zmetadata): %s", store_path);
-			}
 			throw InvalidInputException("Zarr store path does not exist or is not a directory: %s", store_path);
 		}
 		TraverseStore(fs, store_path, store_path, "", collect_chunks, groups, arrays, chunks);
@@ -1414,6 +1443,10 @@ static unique_ptr<GlobalTableFunctionState> InitCells(ClientContext &context, Ta
 		result->fill_value = ParseFillValue(bind_data.array, result->dtype);
 	}
 	result->chunk_element_count = Product(bind_data.array.chunks);
+	if (result->dtype.element_size != 0 &&
+	    result->chunk_element_count > std::numeric_limits<idx_t>::max() / result->dtype.element_size) {
+		throw InvalidInputException("Zarr chunk byte size overflow");
+	}
 	result->expected_chunk_bytes = result->chunk_element_count * result->dtype.element_size;
 	return std::move(result);
 }
