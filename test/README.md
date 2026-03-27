@@ -8,6 +8,7 @@ The current suite covers the metadata and `zarr_cells` slices:
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
 - `zarr_cells(path, array_path)`
+- `test/python_smoke.py` for a Python-side smoke example using DuckDB 1.5.0
 
 The checked-in fixtures used by `test/sql/duckdb_zarr.test` are:
 
@@ -30,4 +31,10 @@ or
 
 ```bash
 make test_debug
+```
+
+The Python smoke example can be run with:
+
+```bash
+uvx --with duckdb==1.5.0 --with numpy --with pandas python test/python_smoke.py
 ```

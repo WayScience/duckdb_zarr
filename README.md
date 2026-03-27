@@ -79,6 +79,18 @@ Run the extension tests:
 make test_metadata
 ```
 
+Run the Python smoke example with the same environment shape many Python users will use:
+
+```sh
+uvx --with duckdb==1.5.0 --with numpy --with pandas python test/python_smoke.py
+```
+
+There is also a matching make target:
+
+```sh
+make test_python_example
+```
+
 Package a static extension repository layout from downloaded CI artifacts:
 
 ```sh
