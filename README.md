@@ -11,11 +11,11 @@ The current implementation follows the project documents conservatively:
 Today’s extension provides metadata and relational scan table functions for local stores and a constrained remote read path:
 
 - `zarr(path)` for a simple array overview
-- `zarr(path, array_path)` as a convenience alias for `zarr_cells(path, array_path)`
-- `zarr_groups(path)`
-- `zarr_arrays(path)`
-- `zarr_chunks(path)`
-- `zarr_cells(path, array_path)` for Zarr dtypes `|b1`, `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f2`, `f4`, and `f8`
+- `zarr(path, array_path)` and `zarr(path, array_path, version_override)` as convenience aliases for `zarr_cells(...)`
+- `zarr_groups(path)` and `zarr_groups(path, version_override)`
+- `zarr_arrays(path)` and `zarr_arrays(path, version_override)`
+- `zarr_chunks(path)` and `zarr_chunks(path, version_override)`
+- `zarr_cells(path, array_path)` and `zarr_cells(path, array_path, version_override)` for Zarr dtypes `|b1`, `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f2`, `f4`, and `f8`
 
 This gives a usable SQL entrypoint for understanding a Zarr store and projecting dense numeric arrays into relational rows. Other dtypes such as complex values and other unsupported or non-standard Zarr dtypes are currently rejected by `zarr_cells(path, array_path)`.
 
@@ -24,14 +24,21 @@ This gives a usable SQL entrypoint for understanding a Zarr store and projecting
 The MVP currently supports:
 
 - Local filesystem Zarr v2 discovery
+- Local filesystem Zarr v3 discovery from `zarr.json`
 - Zarr v2 consolidated metadata discovery from `.zmetadata`
 - Remote `http://`, `https://`, and `s3://` stores when DuckDB `httpfs` is available and the store is consolidated
 - OME-Zarr-style multiscales groups built on Zarr v2, including level arrays such as `0`
+- Real-world OME-Zarr v3 metadata discovery for stores such as image-label hierarchies and multiscales groups
 - Group enumeration from `.zgroup`
-- Array enumeration from `.zarray`
-- Chunk enumeration for both `.` and `/` dimension separators
+- Array enumeration from `.zarray` and `zarr.json`
+- Automatic v2/v3 detection for local stores, with explicit `version_override` support (`auto`, `v2`, `v3`) on the lower-level SQL functions
+- Chunk enumeration for v2 `.` and `/` separators plus Zarr v3 `default` and `v2` chunk-key encodings
 - `zarr_cells(path, array_path)` for dense arrays with dtypes `|b1`, `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f2`, `f4`, and `f8`
 - Uncompressed and gzip-compressed chunk payloads
+- Zarr v3 regular chunk grids with `bytes` and optional `gzip` codecs
+- Zarr v3 transpose handling for identity and full-reverse permutations
+- Zarr v3 `sharding_indexed` arrays with inner Blosc (`zstd`) decode for common OME-Zarr image and label data
+- Real OME-Zarr v3 cell scans against `test/data/idr0062A/6001240_labels.zarr`
 - Missing-chunk fill-value materialization for supported `zarr_cells()` dtypes when `fill_value` is present
 - Dynamic `(dim_0, ..., value)` projection based on array rank and dtype
 - Projection-aware `zarr_cells()` scans
@@ -43,9 +50,9 @@ The MVP currently supports:
 The MVP does not yet support:
 
 - `zarr_cells()` for dtypes outside `|b1`, `i1`, `i2`, `i4`, `i8`, `u1`, `u2`, `u4`, `u8`, `f2`, `f4`, and `f8`
-- Blosc chunk decode
+- Blosc codecs outside the currently supported `zstd`-backed path
 - Non-consolidated remote store discovery
-- Zarr v3 metadata
+- Remote hierarchical discovery for non-consolidated Zarr v3 group stores
 - Arrow materialization
 
 ## Quick Start
@@ -127,7 +134,14 @@ SELECT * FROM zarr_arrays('test/data/simple_v2.zarr');
 SELECT * FROM zarr_chunks('test/data/simple_v2.zarr');
 SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
 SELECT * FROM zarr('test/data/simple_v2.zarr');
+SELECT * FROM zarr_arrays('test/data/simple_v3.zarr', 'v3');
+SELECT * FROM zarr('test/data/simple_v3.zarr', 'temperature_v3', 'v3');
 SELECT * FROM zarr('test/data/ome_example.ome.zarr', '0');
+SELECT * FROM zarr('test/data/idr0062A/6001240_labels.zarr');
+SELECT * FROM zarr('test/data/idr0062A/6001240_labels.zarr', '0') LIMIT 5;
+SELECT SUM(value)
+FROM zarr('test/data/idr0062A/6001240_labels.zarr', 'labels/0/0')
+WHERE dim_0 = 0 AND dim_1 = 0 AND dim_2 < 4 AND dim_3 < 4;
 ```
 
 For remote stores in this phase, the practical contract is:
@@ -135,6 +149,13 @@ For remote stores in this phase, the practical contract is:
 - the store must expose Zarr v2 consolidated metadata at `.zmetadata`
 - DuckDB must have `httpfs` available for the URI scheme you use
 - chunk data are still read directly from remote chunk object paths
+
+Version detection notes:
+
+- `zarr(path)` auto-detects between local v2 and v3 stores
+- lower-level functions accept an optional `version_override` argument: `auto`, `v2`, or `v3`
+- the convenience cell entrypoint also accepts an override as `zarr(path, array_path, version_override)`
+- explicit override is useful when a path is ambiguous or when you want failures to be version-specific
 
 ## Install Like An Extension
 
@@ -221,7 +242,7 @@ The current code maps directly to the architecture document:
 
 - Store Adapter: local filesystem traversal through DuckDB’s `FileSystem`
 - Store Adapter: consolidated remote discovery for `http://`, `https://`, and `s3://` paths through DuckDB filesystem routing
-- Metadata Parser: `.zgroup` and `.zarray` parsing via `yyjson`
+- Metadata Parser: Zarr v2 `.zgroup`/`.zarray` plus Zarr v3 `zarr.json` parsing via `yyjson`
 - DuckDB Bridge: table functions registered from the extension entrypoint
 - Relational Cell Scan: `zarr_cells()` with pushed filters, projection-aware output, and dimension-based chunk pruning
 
