@@ -67,10 +67,10 @@ Install developer tooling for formatting and hooks:
 
 ```sh
 python3 -m pip install pre-commit clang-format==11.0.1
-pre-commit install
+pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
-That single `pre-commit install` command now installs both:
+Re-run that command after pulling hook configuration changes. It installs both:
 - a `pre-commit` hook that auto-fixes DuckDB formatting
 - a `pre-push` hook that runs the same formatter in `--check` mode before CI sees the push
 
