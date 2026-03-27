@@ -4,6 +4,8 @@
 name: Main Extension Distribution Pipeline
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -18,7 +20,7 @@ jobs:
     with:
       duckdb_version: v1.5.0
       ci_tools_version: v1.5.0
-      extension_name: quack
+      extension_name: duckdb_zarr
 
   code-quality-check:
     name: Code Quality Check
@@ -26,5 +28,5 @@ jobs:
     with:
       duckdb_version: v1.5.0
       ci_tools_version: v1.5.0
-      extension_name: quack
+      extension_name: duckdb_zarr
       format_checks: 'format;tidy'

@@ -1,0 +1,234 @@
+# name: test/sql/duckdb_zarr.test
+# description: metadata tests for duckdb_zarr
+# group: [sql]
+
+statement error
+SELECT * FROM zarr_groups('test/data/simple_v2.zarr');
+----
+Catalog Error: Table Function with name zarr_groups does not exist!
+
+require duckdb_zarr
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr/%'
+FROM zarr_groups('test/data/simple_v2.zarr')
+ORDER BY group_path;
+----
+/	2	true
+stations	2	true
+
+query I
+SELECT COUNT(*)
+FROM zarr_groups('test/data/simple_v2.zarr')
+WHERE metadata_path LIKE '%/.zmetadata#%';
+----
+2
+
+query IIIIIIIII
+SELECT
+    array_path,
+    rank,
+    shape::VARCHAR,
+    chunk_shape::VARCHAR,
+    dtype,
+    "order",
+    COALESCE(NULLIF(compressor, ''), '<none>'),
+    dimension_separator,
+    metadata_path LIKE '%simple_v2.zarr/%'
+FROM zarr_arrays('test/data/simple_v2.zarr')
+ORDER BY array_path;
+----
+half_precision	2	[2, 2]	[2, 2]	<f2	C	<none>	.	1
+mask	2	[2, 3]	[2, 2]	|b1	C	<none>	.	1
+sparse_fill	2	[2, 3]	[2, 2]	<i4	C	<none>	.	1
+stations/elevation	1	[2]	[2]	<i4	C	<none>	/	1
+temperature	2	[4, 3]	[2, 2]	<f8	C	{"id":"gzip","level":1}	.	1
+
+query IIIII
+SELECT
+    array_path,
+    chunk_key,
+    chunk_coords::VARCHAR,
+    file_size_bytes > 0,
+    file_path LIKE '%simple_v2.zarr/%'
+FROM zarr_chunks('test/data/simple_v2.zarr')
+ORDER BY array_path, chunk_key;
+----
+half_precision	0.0	[0, 0]	1	1
+mask	0.0	[0, 0]	1	1
+mask	0.1	[0, 1]	1	1
+sparse_fill	0.0	[0, 0]	1	1
+stations/elevation	0	[0]	1	1
+temperature	0.0	[0, 0]	1	1
+temperature	0.1	[0, 1]	1	1
+temperature	1.0	[1, 0]	1	1
+temperature	1.1	[1, 1]	1	1
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+ORDER BY dim_0;
+----
+0	100
+1	200
+
+query II
+SELECT dim_0, value
+FROM zarr('test/data/simple_v2.zarr', 'stations/elevation')
+ORDER BY dim_0;
+----
+0	100
+1	200
+
+query II
+SELECT array_path, rank
+FROM zarr('test/data/simple_v2.zarr')
+ORDER BY array_path;
+----
+half_precision	2
+mask	2
+sparse_fill	2
+stations/elevation	1
+temperature	2
+
+query III
+SELECT dim_0, dim_1, value::DOUBLE
+FROM zarr_cells('test/data/simple_v2.zarr', 'half_precision')
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	-2.0
+1	0	0.5
+1	1	4.0
+
+query III
+SELECT dim_0, dim_1, CASE WHEN value THEN 1 ELSE 0 END
+FROM zarr_cells('test/data/simple_v2.zarr', 'mask')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	0
+0	2	0
+1	0	1
+1	1	1
+1	2	1
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'sparse_fill')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	2
+0	2	-1
+1	0	4
+1	1	5
+1	2	-1
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	2.5
+0	2	3.5
+1	0	4.5
+1	1	5.5
+1	2	6.5
+2	0	7.5
+2	1	8.5
+2	2	9.5
+3	0	10.5
+3	1	11.5
+3	2	12.5
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+WHERE dim_0 = 0
+ORDER BY dim_0, dim_1;
+----
+0	0	1.5
+0	1	2.5
+0	2	3.5
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'temperature')
+WHERE dim_0 >= 2 AND dim_1 = 1
+ORDER BY dim_0, dim_1;
+----
+2	1	8.5
+3	1	11.5
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+WHERE value >= 150
+ORDER BY dim_0;
+----
+1	200
+
+query I
+SELECT value
+FROM zarr_cells('test/data/simple_v2.zarr', 'stations/elevation')
+WHERE dim_0 = 1;
+----
+200
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr/%'
+FROM zarr_groups('test/data/ome_example.ome.zarr')
+ORDER BY group_path;
+----
+/	2	true
+
+query IIIIIIII
+SELECT
+    array_path,
+    rank,
+    shape::VARCHAR,
+    chunk_shape::VARCHAR,
+    dtype,
+    "order",
+    COALESCE(NULLIF(compressor, ''), '<none>'),
+    dimension_separator
+FROM zarr_arrays('test/data/ome_example.ome.zarr')
+ORDER BY array_path;
+----
+0	3	[2, 2, 3]	[1, 2, 2]	<u2	C	{"id":"gzip","level":1}	/
+
+query IIII
+SELECT dim_0, dim_1, dim_2, value
+FROM zarr_cells('test/data/ome_example.ome.zarr', '0')
+ORDER BY dim_0, dim_1, dim_2;
+----
+0	0	0	1
+0	0	1	2
+0	0	2	3
+0	1	0	4
+0	1	1	5
+0	1	2	6
+1	0	0	7
+1	0	1	8
+1	0	2	9
+1	1	0	10
+1	1	1	11
+1	1	2	12
+
+query II
+SELECT dim_0, value
+FROM zarr_cells('test/data/ome_example.ome.zarr', '0')
+WHERE dim_1 = 1 AND dim_2 = 2
+ORDER BY dim_0;
+----
+0	6
+1	12
+
+query II
+SELECT array_path, rank
+FROM zarr('test/data/ome_example.ome.zarr')
+ORDER BY array_path;
+----
+0	3

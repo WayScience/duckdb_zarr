@@ -1,0 +1,62 @@
+name: Publish Extension Repository
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  DUCKDB_VERSION: v1.5.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+jobs:
+  build-extension-binaries:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
+    with:
+      duckdb_version: v1.5.0
+      ci_tools_version: v1.5.0
+      extension_name: duckdb_zarr
+
+  package-repository:
+    name: Package release assets
+    runs-on: ubuntu-latest
+    needs: build-extension-binaries
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: duckdb_zarr-${{ env.DUCKDB_VERSION }}-extension-*
+          path: build/distribution-artifacts
+          merge-multiple: false
+
+      - name: Package repository layout
+        run: |
+          python3 scripts/package_extension_repository.py \
+            --artifacts-dir build/distribution-artifacts \
+            --out-dir build/extension-repository \
+            --extension-name duckdb_zarr \
+            --duckdb-version ${{ env.DUCKDB_VERSION }}
+
+      - name: Prepare release assets
+        run: |
+          rm -rf build/release-assets
+          mkdir -p build/release-assets
+          for asset in build/extension-repository/${{ env.DUCKDB_VERSION }}/*/duckdb_zarr.duckdb_extension.gz; do
+            platform=$(basename "$(dirname "$asset")")
+            cp "$asset" "build/release-assets/duckdb_zarr-${{ env.DUCKDB_VERSION }}-${platform}.duckdb_extension.gz"
+          done
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/release-assets/*.duckdb_extension.gz
+          fail_on_unmatched_files: true
