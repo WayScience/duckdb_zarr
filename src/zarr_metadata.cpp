@@ -157,6 +157,38 @@ static idx_t FlattenCoordsCOrder(const vector<int64_t> &coords, const vector<int
 static vector<int64_t> ShardInnerChunksPerShard(const ZarrArrayEntry &array);
 static string RequireNodeType(yyjson_val *root, const string &metadata_path);
 
+static ZarrArrayEntry MakeArrayEntry(string store_path, string array_path, int64_t zarr_format, int64_t rank,
+                                     vector<int64_t> shape, vector<int64_t> chunks, string dtype, string order,
+                                     string compressor, string fill_value, string chunk_key_encoding,
+                                     string dimension_separator, string metadata_path, bool supports_cells,
+                                     string cells_error, bool is_sharding_indexed, vector<int64_t> storage_chunks,
+                                     vector<int64_t> inner_chunks, string inner_compressor, string index_codecs,
+                                     string index_location) {
+	ZarrArrayEntry entry;
+	entry.store_path = std::move(store_path);
+	entry.array_path = std::move(array_path);
+	entry.zarr_format = zarr_format;
+	entry.rank = rank;
+	entry.shape = std::move(shape);
+	entry.chunks = std::move(chunks);
+	entry.dtype = std::move(dtype);
+	entry.order = std::move(order);
+	entry.compressor = std::move(compressor);
+	entry.fill_value = std::move(fill_value);
+	entry.chunk_key_encoding = std::move(chunk_key_encoding);
+	entry.dimension_separator = std::move(dimension_separator);
+	entry.metadata_path = std::move(metadata_path);
+	entry.supports_cells = supports_cells;
+	entry.cells_error = std::move(cells_error);
+	entry.is_sharding_indexed = is_sharding_indexed;
+	entry.storage_chunks = std::move(storage_chunks);
+	entry.inner_chunks = std::move(inner_chunks);
+	entry.inner_compressor = std::move(inner_compressor);
+	entry.index_codecs = std::move(index_codecs);
+	entry.index_location = std::move(index_location);
+	return entry;
+}
+
 static string JoinNodePath(const string &base, const string &name) {
 	if (base.empty()) {
 		return name;
@@ -1406,27 +1438,11 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 		throw InvalidInputException("Unsupported Zarr order in %s: %s", metadata_path, order);
 	}
 
-	return {store_path,
-	        relative_path,
-	        RequireZarrFormatV2(root, metadata_path),
-	        NumericCast<int64_t>(shape.size()),
-	        std::move(shape),
-	        std::move(chunks),
-	        OptionalString(root, "dtype"),
-	        std::move(order),
-	        std::move(compressor),
-	        std::move(fill_value),
-	        "v2",
-	        std::move(dimension_separator),
-	        metadata_path,
-	        true,
-	        "",
-	        false,
-	        {},
-	        {},
-	        "",
-	        "",
-	        ""};
+	return MakeArrayEntry(store_path, relative_path, RequireZarrFormatV2(root, metadata_path),
+	                      NumericCast<int64_t>(shape.size()), std::move(shape), std::move(chunks),
+	                      OptionalString(root, "dtype"), std::move(order), std::move(compressor),
+	                      std::move(fill_value), "v2", std::move(dimension_separator), metadata_path, true, "",
+	                      false, {}, {}, "", "", "");
 }
 
 static ZarrGroupEntry ParseGroupMetadataV3(yyjson_val *root, const string &store_path, const string &relative_path,
@@ -1637,27 +1653,13 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 			bool little_endian = HostIsLittleEndian();
 			ParseV3ShardingCodec(first_codec, metadata_path, chunks, compressor, supports_cells, cells_error,
 			                     inner_chunks, inner_compressor, index_codecs, index_location, little_endian);
-			return {store_path,
-			        relative_path,
-			        zarr_format,
-			        NumericCast<int64_t>(shape.size()),
-			        std::move(shape),
-			        std::move(chunks),
-			        ParseV3DataType(root, metadata_path, little_endian),
-			        "C",
-			        std::move(compressor),
-			        JsonToString(yyjson_obj_get(root, "fill_value")),
-			        std::move(chunk_key_encoding_name),
-			        std::move(dimension_separator),
-			        metadata_path,
-			        supports_cells,
-			        std::move(cells_error),
-			        true,
-			        {},
-			        std::move(inner_chunks),
-			        std::move(inner_compressor),
-			        std::move(index_codecs),
-			        std::move(index_location)};
+			return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
+			                      std::move(shape), std::move(chunks),
+			                      ParseV3DataType(root, metadata_path, little_endian), "C", std::move(compressor),
+			                      JsonToString(yyjson_obj_get(root, "fill_value")),
+			                      std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+			                      supports_cells, std::move(cells_error), true, {}, std::move(inner_chunks),
+			                      std::move(inner_compressor), std::move(index_codecs), std::move(index_location));
 		}
 	}
 	bool saw_bytes = false;
@@ -1754,27 +1756,12 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 		cells_error = "zarr_cells does not yet support the Zarr v3 codec pipeline for this array";
 	}
 
-	return {store_path,
-	        relative_path,
-	        zarr_format,
-	        NumericCast<int64_t>(shape.size()),
-	        std::move(shape),
-	        std::move(chunks),
-	        ParseV3DataType(root, metadata_path, little_endian),
-	        std::move(order),
-	        std::move(compressor),
-	        JsonToString(yyjson_obj_get(root, "fill_value")),
-	        std::move(chunk_key_encoding_name),
-	        std::move(dimension_separator),
-	        metadata_path,
-	        supports_cells,
-	        std::move(cells_error),
-	        false,
-	        {},
-	        {},
-	        "",
-	        "",
-	        ""};
+	return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
+	                      std::move(shape), std::move(chunks),
+	                      ParseV3DataType(root, metadata_path, little_endian), std::move(order),
+	                      std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
+	                      std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+	                      supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
 }
 
 static string MetadataPathForKey(const string &store_path, const string &key) {
