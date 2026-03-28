@@ -14,8 +14,8 @@ SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr/%'
 FROM zarr_groups('test/data/simple_v2.zarr')
 ORDER BY group_path;
 ----
-/	2	true
-stations	2	true
+/	2	1
+stations	2	1
 
 query I
 SELECT COUNT(*)
@@ -182,7 +182,7 @@ SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr/%'
 FROM zarr_groups('test/data/ome_example.ome.zarr')
 ORDER BY group_path;
 ----
-/	2	true
+/	2	1
 
 query IIIIIIII
 SELECT
@@ -238,7 +238,7 @@ SELECT group_path, zarr_format, metadata_path LIKE '%simple_v3.zarr/%'
 FROM zarr_groups('test/data/simple_v3.zarr')
 ORDER BY group_path;
 ----
-/	3	true
+/	3	1
 
 query IIIIIIII
 SELECT
@@ -327,9 +327,9 @@ SELECT group_path, zarr_format, metadata_path LIKE '%idr0062A/6001240_labels.zar
 FROM zarr_groups('test/data/idr0062A/6001240_labels.zarr')
 ORDER BY group_path;
 ----
-/	3	true
-labels	3	true
-labels/0	3	true
+/	3	1
+labels	3	1
+labels/0	3	1
 
 query II
 SELECT array_path, rank
