@@ -10,7 +10,7 @@ Catalog Error: Table Function with name zarr_groups does not exist!
 require duckdb_zarr
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr%'
 FROM zarr_groups('test/data/simple_v2.zarr')
 ORDER BY group_path;
 ----
@@ -34,7 +34,7 @@ SELECT
     "order",
     COALESCE(NULLIF(compressor, ''), '<none>'),
     dimension_separator,
-    metadata_path LIKE '%simple_v2.zarr/%'
+    metadata_path LIKE '%simple_v2.zarr%'
 FROM zarr_arrays('test/data/simple_v2.zarr')
 ORDER BY array_path;
 ----
@@ -50,7 +50,7 @@ SELECT
     chunk_key,
     chunk_coords::VARCHAR,
     file_size_bytes > 0,
-    file_path LIKE '%simple_v2.zarr/%'
+    file_path LIKE '%simple_v2.zarr%'
 FROM zarr_chunks('test/data/simple_v2.zarr')
 ORDER BY array_path, chunk_key;
 ----
@@ -178,7 +178,7 @@ WHERE dim_0 = 1;
 200
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr%'
 FROM zarr_groups('test/data/ome_example.ome.zarr')
 ORDER BY group_path;
 ----
@@ -234,7 +234,7 @@ ORDER BY array_path;
 0	3
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%simple_v3.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v3.zarr%'
 FROM zarr_groups('test/data/simple_v3.zarr')
 ORDER BY group_path;
 ----
@@ -323,7 +323,7 @@ SELECT * FROM zarr_arrays('test/data/simple_v3.zarr', 'v2');
 Invalid Input Error: Zarr store path does not contain recognizable v2 metadata: test/data/simple_v3.zarr
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%idr0062A/6001240_labels.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%6001240_labels.zarr%'
 FROM zarr_groups('test/data/idr0062A/6001240_labels.zarr')
 ORDER BY group_path;
 ----
