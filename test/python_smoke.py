@@ -1,4 +1,6 @@
 import gzip
+import os
+import platform
 import shutil
 from pathlib import Path
 
@@ -12,21 +14,47 @@ FIXTURE_PATH = ROOT / "test" / "data" / "simple_v2.zarr"
 FIXTURE_V3_PATH = ROOT / "test" / "data" / "simple_v3.zarr"
 IDR_FIXTURE_PATH = ROOT / "test" / "data" / "idr0062A" / "6001240_labels.zarr"
 LOCAL_BUILD_EXTENSION = ROOT / "build" / "release" / "extension" / "duckdb_zarr" / "duckdb_zarr.duckdb_extension"
-RELEASE_ASSET = ROOT / "duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz"
 DECOMPRESSED_EXTENSION = ROOT / "duckdb_zarr.duckdb_extension"
 
 
+def expected_release_asset() -> Path:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "darwin":
+        platform_name = "osx_arm64" if machine in {"arm64", "aarch64"} else "osx_amd64"
+    elif system == "linux":
+        platform_name = "linux_arm64" if machine in {"arm64", "aarch64"} else "linux_amd64"
+    elif system == "windows":
+        platform_name = "windows_amd64"
+    else:
+        raise RuntimeError(f"Unsupported platform for release asset lookup: {platform.system()} / {platform.machine()}")
+
+    return ROOT / f"duckdb_zarr-v1.5.0-{platform_name}.duckdb_extension.gz"
+
+
 def resolve_extension_path() -> Path:
+    override = os.environ.get("DUCKDB_ZARR_EXTENSION")
+    if override:
+        return Path(override).resolve()
     if LOCAL_BUILD_EXTENSION.exists():
         return LOCAL_BUILD_EXTENSION
-    if RELEASE_ASSET.exists():
-        with gzip.open(RELEASE_ASSET, "rb") as src, DECOMPRESSED_EXTENSION.open("wb") as dst:
+    release_asset = expected_release_asset()
+    if release_asset.exists():
+        with gzip.open(release_asset, "rb") as src, DECOMPRESSED_EXTENSION.open("wb") as dst:
             shutil.copyfileobj(src, dst)
         return DECOMPRESSED_EXTENSION
     raise FileNotFoundError(
-        "No extension artifact found. Build the repo with `make` or download "
-        "`duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz` into the repo root."
+        "No extension artifact found. Build the repo with `make`, set DUCKDB_ZARR_EXTENSION "
+        "to an explicit extension path, or download the platform-matching release asset "
+        f"`{release_asset.name}` into the repo root."
     )
+
+
+def should_allow_unsigned_extensions(extension_path: Path) -> bool:
+    if os.environ.get("DUCKDB_ZARR_ALLOW_UNSIGNED", "").lower() in {"1", "true", "yes"}:
+        return True
+    return extension_path.is_file() and extension_path.resolve().is_relative_to(ROOT.resolve())
 
 
 def main() -> None:
@@ -34,11 +62,21 @@ def main() -> None:
         raise FileNotFoundError("Fixture stores missing. Run `make fixture` from the repo root first.")
 
     extension_path = resolve_extension_path()
+    config = {}
+    if should_allow_unsigned_extensions(extension_path):
+        # Local build artifacts and manually downloaded release files are unsigned in this repo.
+        config["allow_unsigned_extensions"] = "true"
 
-    con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+    con = duckdb.connect(config=config)
     print("DuckDB version:", con.execute("select version()").fetchone()[0])
 
-    con.execute(f"LOAD '{extension_path.as_posix()}'")
+    try:
+        con.execute(f"LOAD '{extension_path.as_posix()}'")
+    except duckdb.Error as exc:
+        raise RuntimeError(
+            "Failed to load the extension. If you are loading a local unsigned artifact, set "
+            "DUCKDB_ZARR_ALLOW_UNSIGNED=1."
+        ) from exc
 
     overview = con.execute(
         """
