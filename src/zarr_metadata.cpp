@@ -168,9 +168,10 @@ static ZarrArrayEntry MakeArrayEntry(string store_path, string array_path, int64
 	entry.store_path = std::move(store_path);
 	entry.array_path = std::move(array_path);
 	entry.zarr_format = zarr_format;
-	entry.rank = rank;
 	entry.shape = std::move(shape);
 	entry.chunks = std::move(chunks);
+	entry.rank = NumericCast<int64_t>(entry.shape.size());
+	D_ASSERT(rank == entry.rank);
 	entry.dtype = std::move(dtype);
 	entry.order = std::move(order);
 	entry.compressor = std::move(compressor);
@@ -1440,9 +1441,8 @@ static ZarrArrayEntry ParseArrayMetadataObject(yyjson_val *root, const string &s
 
 	return MakeArrayEntry(store_path, relative_path, RequireZarrFormatV2(root, metadata_path),
 	                      NumericCast<int64_t>(shape.size()), std::move(shape), std::move(chunks),
-	                      OptionalString(root, "dtype"), std::move(order), std::move(compressor),
-	                      std::move(fill_value), "v2", std::move(dimension_separator), metadata_path, true, "",
-	                      false, {}, {}, "", "", "");
+	                      OptionalString(root, "dtype"), std::move(order), std::move(compressor), std::move(fill_value),
+	                      "v2", std::move(dimension_separator), metadata_path, true, "", false, {}, {}, "", "", "");
 }
 
 static ZarrGroupEntry ParseGroupMetadataV3(yyjson_val *root, const string &store_path, const string &relative_path,
@@ -1656,10 +1656,10 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 			return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
 			                      std::move(shape), std::move(chunks),
 			                      ParseV3DataType(root, metadata_path, little_endian), "C", std::move(compressor),
-			                      JsonToString(yyjson_obj_get(root, "fill_value")),
-			                      std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
-			                      supports_cells, std::move(cells_error), true, {}, std::move(inner_chunks),
-			                      std::move(inner_compressor), std::move(index_codecs), std::move(index_location));
+			                      JsonToString(yyjson_obj_get(root, "fill_value")), std::move(chunk_key_encoding_name),
+			                      std::move(dimension_separator), metadata_path, supports_cells, std::move(cells_error),
+			                      true, {}, std::move(inner_chunks), std::move(inner_compressor),
+			                      std::move(index_codecs), std::move(index_location));
 		}
 	}
 	bool saw_bytes = false;
@@ -1756,9 +1756,8 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 		cells_error = "zarr_cells does not yet support the Zarr v3 codec pipeline for this array";
 	}
 
-	return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
-	                      std::move(shape), std::move(chunks),
-	                      ParseV3DataType(root, metadata_path, little_endian), std::move(order),
+	return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()), std::move(shape),
+	                      std::move(chunks), ParseV3DataType(root, metadata_path, little_endian), std::move(order),
 	                      std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
 	                      std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
 	                      supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
@@ -2246,7 +2245,7 @@ static void ScanArrays(ClientContext &, TableFunctionInput &data_p, DataChunk &o
 		output.SetValue(0, count, Value(entry.store_path));
 		output.SetValue(1, count, Value(entry.array_path));
 		output.SetValue(2, count, Value::BIGINT(entry.zarr_format));
-		output.SetValue(3, count, Value::BIGINT(entry.rank));
+		output.SetValue(3, count, Value::BIGINT(NumericCast<int64_t>(entry.shape.size())));
 		output.SetValue(4, count, Value::LIST(LogicalType::BIGINT, ToBigIntValues(entry.shape)));
 		output.SetValue(5, count, Value::LIST(LogicalType::BIGINT, ToBigIntValues(entry.chunks)));
 		output.SetValue(6, count, Value(entry.dtype));
