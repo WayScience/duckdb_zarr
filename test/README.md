@@ -18,7 +18,7 @@ The checked-in fixtures used by `test/sql/duckdb_zarr.test` are:
 - `test/data/ome_example.ome.zarr`
 - `test/data/idr0062A/6001240_labels.zarr`
 
-Both fixtures can be regenerated with:
+These fixtures can be regenerated with:
 
 ```bash
 make fixture
