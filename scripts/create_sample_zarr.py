@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / "test" / "data" / "simple_v2.zarr"
+STORE_V3 = ROOT / "test" / "data" / "simple_v3.zarr"
 OME_STORE = ROOT / "test" / "data" / "ome_example.ome.zarr"
 
 
@@ -198,8 +199,63 @@ def create_ome_store() -> None:
     )
 
 
+def create_simple_v3_store() -> None:
+    shutil.rmtree(STORE_V3, ignore_errors=True)
+    root_group = {"zarr_format": 3, "node_type": "group", "attributes": {"name": "simple_v3"}}
+    write_json(STORE_V3 / "zarr.json", root_group)
+
+    temperature_array = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [3, 2],
+        "data_type": "float64",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": None,
+        "codecs": [
+            {"name": "bytes", "configuration": {"endian": "little"}},
+            {"name": "gzip", "configuration": {"level": 1}},
+        ],
+        "attributes": {"units": "celsius"},
+    }
+    write_json(STORE_V3 / "temperature_v3" / "zarr.json", temperature_array)
+    write_chunk(STORE_V3 / "temperature_v3" / "c" / "0" / "0", gzip_chunk(struct.pack("<4d", 1.0, 2.0, 3.0, 4.0)))
+    write_chunk(STORE_V3 / "temperature_v3" / "c" / "1" / "0", gzip_chunk(struct.pack("<4d", 5.0, 6.0, 0.0, 0.0)))
+
+    mask_array = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [2, 3],
+        "data_type": "bool",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+        "chunk_key_encoding": {"name": "v2", "configuration": {"separator": "."}},
+        "fill_value": False,
+        "codecs": [{"name": "bytes"}],
+    }
+    write_json(STORE_V3 / "mask_v3" / "zarr.json", mask_array)
+    write_chunk(STORE_V3 / "mask_v3" / "0.0", bytes([1, 0, 1, 1]))
+    write_chunk(STORE_V3 / "mask_v3" / "0.1", bytes([0, 0, 1, 0]))
+
+    fortran_array = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [2, 2],
+        "data_type": "int32",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0,
+        "codecs": [
+            {"name": "transpose", "configuration": {"order": [1, 0]}},
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ],
+    }
+    write_json(STORE_V3 / "fortran_v3" / "zarr.json", fortran_array)
+    write_chunk(STORE_V3 / "fortran_v3" / "c" / "0" / "0", struct.pack("<4i", 1, 3, 2, 4))
+
+
 def main() -> None:
     create_simple_store()
+    create_simple_v3_store()
     create_ome_store()
 
 

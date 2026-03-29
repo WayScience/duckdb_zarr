@@ -24,6 +24,7 @@ jobs:
       duckdb_version: v1.5.0
       ci_tools_version: v1.5.0
       extension_name: duckdb_zarr
+      opt_in_archs: linux_amd64;linux_arm64;osx_amd64;osx_arm64;windows_amd64
 
   package-repository:
     name: Package release assets

@@ -1,17 +1,18 @@
 #pragma once
 
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 
 namespace duckdb {
 
 class ZarrMetadata {
 public:
-	static TableFunction GetGroupsFunction();
-	static TableFunction GetArraysFunction();
-	static TableFunction GetChunksFunction();
-	static TableFunction GetCellsFunction();
-	static TableFunction GetZarrFunction();
-	static TableFunction GetZarrCellsAliasFunction();
+	static TableFunctionSet GetGroupsFunction();
+	static TableFunctionSet GetArraysFunction();
+	static TableFunctionSet GetChunksFunction();
+	static TableFunctionSet GetCellsFunction();
+	static TableFunctionSet GetZarrFunction();
+	static TableFunctionSet GetZarrCellsAliasFunction();
 };
 
 } // namespace duckdb

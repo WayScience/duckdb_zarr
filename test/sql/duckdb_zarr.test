@@ -10,12 +10,12 @@ Catalog Error: Table Function with name zarr_groups does not exist!
 require duckdb_zarr
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr%'
 FROM zarr_groups('test/data/simple_v2.zarr')
 ORDER BY group_path;
 ----
-/	2	true
-stations	2	true
+/	2	1
+stations	2	1
 
 query I
 SELECT COUNT(*)
@@ -34,7 +34,7 @@ SELECT
     "order",
     COALESCE(NULLIF(compressor, ''), '<none>'),
     dimension_separator,
-    metadata_path LIKE '%simple_v2.zarr/%'
+    metadata_path LIKE '%simple_v2.zarr%'
 FROM zarr_arrays('test/data/simple_v2.zarr')
 ORDER BY array_path;
 ----
@@ -50,7 +50,7 @@ SELECT
     chunk_key,
     chunk_coords::VARCHAR,
     file_size_bytes > 0,
-    file_path LIKE '%simple_v2.zarr/%'
+    file_path LIKE '%simple_v2.zarr%'
 FROM zarr_chunks('test/data/simple_v2.zarr')
 ORDER BY array_path, chunk_key;
 ----
@@ -178,11 +178,11 @@ WHERE dim_0 = 1;
 200
 
 query III
-SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr/%'
+SELECT group_path, zarr_format, metadata_path LIKE '%ome_example.ome.zarr%'
 FROM zarr_groups('test/data/ome_example.ome.zarr')
 ORDER BY group_path;
 ----
-/	2	true
+/	2	1
 
 query IIIIIIII
 SELECT
@@ -232,3 +232,191 @@ FROM zarr('test/data/ome_example.ome.zarr')
 ORDER BY array_path;
 ----
 0	3
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%simple_v3.zarr%'
+FROM zarr_groups('test/data/simple_v3.zarr')
+ORDER BY group_path;
+----
+/	3	1
+
+query IIIIIIII
+SELECT
+    array_path,
+    rank,
+    shape::VARCHAR,
+    chunk_shape::VARCHAR,
+    dtype,
+    "order",
+    COALESCE(NULLIF(compressor, ''), '<none>'),
+    chunk_key_encoding
+FROM zarr_arrays('test/data/simple_v3.zarr')
+ORDER BY array_path;
+----
+fortran_v3	2	[2, 2]	[2, 2]	<i4	F	<none>	default
+mask_v3	2	[2, 3]	[2, 2]	|b1	C	<none>	v2
+temperature_v3	2	[3, 2]	[2, 2]	<f8	C	{"id":"gzip","level":1}	default
+
+query II
+SELECT array_path, zarr_format
+FROM zarr('test/data/simple_v3.zarr')
+ORDER BY array_path;
+----
+fortran_v3	3
+mask_v3	3
+temperature_v3	3
+
+query III
+SELECT array_path, chunk_key, chunk_coords::VARCHAR
+FROM zarr_chunks('test/data/simple_v3.zarr')
+ORDER BY array_path, chunk_key;
+----
+fortran_v3	c/0/0	[0, 0]
+mask_v3	0.0	[0, 0]
+mask_v3	0.1	[0, 1]
+temperature_v3	c/0/0	[0, 0]
+temperature_v3	c/1/0	[1, 0]
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr_cells('test/data/simple_v3.zarr', 'temperature_v3')
+ORDER BY dim_0, dim_1;
+----
+0	0	1.0
+0	1	2.0
+1	0	3.0
+1	1	4.0
+2	0	5.0
+2	1	6.0
+
+query III
+SELECT dim_0, dim_1, CASE WHEN value THEN 1 ELSE 0 END
+FROM zarr_cells('test/data/simple_v3.zarr', 'mask_v3', 'v3')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	0
+0	2	0
+1	0	1
+1	1	1
+1	2	1
+
+query III
+SELECT dim_0, dim_1, value
+FROM zarr('test/data/simple_v3.zarr', 'fortran_v3', 'v3')
+ORDER BY dim_0, dim_1;
+----
+0	0	1
+0	1	2
+1	0	3
+1	1	4
+
+query I
+SELECT COUNT(*)
+FROM zarr_arrays('test/data/simple_v3.zarr', 'v3');
+----
+3
+
+statement error
+SELECT * FROM zarr_arrays('test/data/simple_v3.zarr', 'v2');
+----
+Invalid Input Error: Zarr store path does not contain recognizable v2 metadata: test/data/simple_v3.zarr
+
+query III
+SELECT group_path, zarr_format, metadata_path LIKE '%6001240_labels.zarr%'
+FROM zarr_groups('test/data/idr0062A/6001240_labels.zarr')
+ORDER BY group_path;
+----
+/	3	1
+labels	3	1
+labels/0	3	1
+
+query II
+SELECT array_path, rank
+FROM zarr('test/data/idr0062A/6001240_labels.zarr')
+ORDER BY array_path;
+----
+0	4
+1	4
+2	4
+labels/0/0	4
+labels/0/1	4
+labels/0/2	4
+labels/0/3	4
+
+query IIIIIII
+SELECT
+    array_path,
+    dtype,
+    chunk_shape::VARCHAR,
+    chunk_key_encoding,
+    CASE WHEN compressor LIKE '%sharding_indexed%' THEN 1 ELSE 0 END,
+    CASE WHEN compressor LIKE '%blosc%' THEN 1 ELSE 0 END,
+    dimension_separator
+FROM zarr_arrays('test/data/idr0062A/6001240_labels.zarr')
+ORDER BY array_path;
+----
+0	<u2	[1, 10, 512, 512]	default	1	1	/
+1	<u2	[1, 10, 512, 512]	default	1	1	/
+2	<u2	[1, 10, 512, 512]	default	1	1	/
+labels/0/0	|i1	[1, 10, 512, 512]	default	1	1	/
+labels/0/1	|i1	[1, 10, 512, 512]	default	1	1	/
+labels/0/2	|i1	[1, 10, 512, 512]	default	1	1	/
+labels/0/3	|i1	[1, 10, 512, 512]	default	1	1	/
+
+query II
+SELECT array_path, COUNT(*)
+FROM zarr_chunks('test/data/idr0062A/6001240_labels.zarr')
+GROUP BY array_path
+ORDER BY array_path;
+----
+0	48
+1	48
+2	48
+labels/0/0	22
+labels/0/1	22
+labels/0/2	22
+labels/0/3	22
+
+query IIIII
+SELECT *
+FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', '0')
+LIMIT 5;
+----
+0	0	0	0	8
+0	0	0	1	9
+0	0	0	2	8
+0	0	0	3	10
+0	0	0	4	8
+
+query I
+SELECT SUM(value)
+FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', '0')
+WHERE dim_0 = 0 AND dim_1 = 0 AND dim_2 < 4 AND dim_3 < 4;
+----
+159
+
+query I
+SELECT value
+FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', '0')
+WHERE dim_0 = 1 AND dim_1 = 100 AND dim_2 = 50 AND dim_3 = 50;
+----
+27
+
+query IIIII
+SELECT *
+FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', 'labels/0/0')
+LIMIT 5;
+----
+0	0	0	0	0
+0	0	0	1	0
+0	0	0	2	0
+0	0	0	3	0
+0	0	0	4	0
+
+query I
+SELECT SUM(value)
+FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', 'labels/0/0')
+WHERE dim_0 = 0 AND dim_1 = 0 AND dim_2 < 4 AND dim_3 < 4;
+----
+0
