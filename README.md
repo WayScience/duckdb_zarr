@@ -172,7 +172,7 @@ To make this work for your repository:
 Then users can install directly from a release asset URL:
 
 ```sql
-INSTALL 'https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
+INSTALL 'https://github.com/wayscience/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
 LOAD duckdb_zarr;
 ```
 
@@ -196,13 +196,13 @@ To publish a new installable extension release from this repository:
    - package platform-specific `.duckdb_extension.gz` assets
    - upload those assets to the matching GitHub Release
 4. Verify that a published artifact path exists, for example:
-   `https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz`
+   `https://github.com/wayscience/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz`
 5. Optionally add human-readable release notes. The installable path is the GitHub Release asset itself.
 
 After that, users can install the extension with:
 
 ```sql
-INSTALL 'https://github.com/d33bs/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
+INSTALL 'https://github.com/wayscience/duckdb_zarr/releases/download/v0.1.0/duckdb_zarr-v1.5.0-osx_arm64.duckdb_extension.gz';
 LOAD duckdb_zarr;
 ```
 
