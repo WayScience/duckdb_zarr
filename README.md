@@ -12,6 +12,8 @@ Today’s extension provides metadata and relational scan table functions for lo
 
 - `zarr(path)` for a simple array overview
 - `zarr(path, array_path)` and `zarr(path, array_path, version_override)` as convenience aliases for `zarr_cells(...)`
+- `ome_arrow(path)` for a Zarr v3 / OME-Arrow-friendly array overview
+- `ome_arrow(path, array_path)` and `ome_arrow(path, array_path, version_override)` for Zarr v3 cell scans with metadata-derived dimension names such as `c`, `z`, `y`, and `x`
 - `zarr_groups(path)` and `zarr_groups(path, version_override)`
 - `zarr_arrays(path)` and `zarr_arrays(path, version_override)`
 - `zarr_chunks(path)` and `zarr_chunks(path, version_override)`
@@ -29,6 +31,7 @@ The MVP currently supports:
 - Remote `http://`, `https://`, and `s3://` stores when DuckDB `httpfs` is available and the store is consolidated
 - OME-Zarr-style multiscales groups built on Zarr v2, including level arrays such as `0`
 - Real-world OME-Zarr v3 metadata discovery for stores such as image-label hierarchies and multiscales groups
+- A lightweight OME-Arrow compatibility layer for Zarr v3 arrays through `ome_arrow(...)`
 - Group enumeration from `.zgroup`
 - Array enumeration from `.zarray` and `zarr.json`
 - Automatic v2/v3 detection for local stores, with explicit `version_override` support (`auto`, `v2`, `v3`) on the lower-level SQL functions
@@ -54,6 +57,7 @@ The MVP does not yet support:
 - Non-consolidated remote store discovery
 - Remote hierarchical discovery for non-consolidated Zarr v3 group stores
 - Arrow materialization
+- Writing formal OME-Arrow artifacts from DuckDB
 
 ## Quick Start
 
@@ -136,9 +140,14 @@ SELECT * FROM zarr_cells('test/data/simple_v2.zarr', 'temperature');
 SELECT * FROM zarr('test/data/simple_v2.zarr');
 SELECT * FROM zarr_arrays('test/data/simple_v3.zarr', 'v3');
 SELECT * FROM zarr('test/data/simple_v3.zarr', 'temperature_v3', 'v3');
+SELECT * FROM ome_arrow('test/data/simple_v3.zarr');
+SELECT * FROM ome_arrow('test/data/simple_v3.zarr', 'temperature_v3');
 SELECT * FROM zarr('test/data/ome_example.ome.zarr', '0');
 SELECT * FROM zarr('test/data/idr0062A/6001240_labels.zarr');
 SELECT * FROM zarr('test/data/idr0062A/6001240_labels.zarr', '0') LIMIT 5;
+SELECT *
+FROM ome_arrow('test/data/idr0062A/6001240_labels.zarr', '0')
+LIMIT 5;
 SELECT SUM(value)
 FROM zarr('test/data/idr0062A/6001240_labels.zarr', 'labels/0/0')
 WHERE dim_0 = 0 AND dim_1 = 0 AND dim_2 < 4 AND dim_3 < 4;
@@ -156,6 +165,13 @@ Version detection notes:
 - lower-level functions accept an optional `version_override` argument: `auto`, `v2`, or `v3`
 - the convenience cell entrypoint also accepts an override as `zarr(path, array_path, version_override)`
 - explicit override is useful when a path is ambiguous or when you want failures to be version-specific
+- `ome_arrow(...)` is intentionally Zarr v3-only because OME-Arrow compatibility in this repo is built on v3 `dimension_names`
+
+OME-Arrow adapter notes:
+
+- `ome_arrow(path)` returns a v3 array overview with `dimension_names`
+- `ome_arrow(path, array_path)` uses those names as relational column names when scanning cells
+- this is a compatibility layer for moving data into Arrow-friendly relational form, not a full OME-Arrow file writer
 
 ## Install Like An Extension
 

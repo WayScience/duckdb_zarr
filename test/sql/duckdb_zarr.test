@@ -9,6 +9,11 @@ Catalog Error: Table Function with name zarr_groups does not exist!
 
 require duckdb_zarr
 
+statement error
+SELECT * FROM ome_arrow('test/data/simple_v2.zarr');
+----
+Invalid Input Error: Zarr store path does not contain recognizable v3 metadata: test/data/simple_v2.zarr
+
 query III
 SELECT group_path, zarr_format, metadata_path LIKE '%simple_v2.zarr%'
 FROM zarr_groups('test/data/simple_v2.zarr')
@@ -258,6 +263,15 @@ mask_v3	2	[2, 3]	[2, 2]	|b1	C	<none>	v2
 temperature_v3	2	[3, 2]	[2, 2]	<f8	C	{"id":"gzip","level":1}	default
 
 query II
+SELECT array_path, dimension_names::VARCHAR
+FROM ome_arrow('test/data/simple_v3.zarr')
+ORDER BY array_path;
+----
+fortran_v3	[row, col]
+mask_v3	[y, x]
+temperature_v3	[y, x]
+
+query II
 SELECT array_path, zarr_format
 FROM zarr('test/data/simple_v3.zarr')
 ORDER BY array_path;
@@ -310,6 +324,18 @@ ORDER BY dim_0, dim_1;
 0	1	2
 1	0	3
 1	1	4
+
+query III
+SELECT y, x, value
+FROM ome_arrow('test/data/simple_v3.zarr', 'temperature_v3')
+ORDER BY y, x;
+----
+0	0	1.0
+0	1	2.0
+1	0	3.0
+1	1	4.0
+2	0	5.0
+2	1	6.0
 
 query I
 SELECT COUNT(*)
@@ -365,6 +391,19 @@ labels/0/2	|i1	[1, 10, 512, 512]	default	1	1	/
 labels/0/3	|i1	[1, 10, 512, 512]	default	1	1	/
 
 query II
+SELECT array_path, dimension_names::VARCHAR
+FROM ome_arrow('test/data/idr0062A/6001240_labels.zarr')
+ORDER BY array_path;
+----
+0	[c, z, y, x]
+1	[c, z, y, x]
+2	[c, z, y, x]
+labels/0/0	[c, z, y, x]
+labels/0/1	[c, z, y, x]
+labels/0/2	[c, z, y, x]
+labels/0/3	[c, z, y, x]
+
+query II
 SELECT array_path, COUNT(*)
 FROM zarr_chunks('test/data/idr0062A/6001240_labels.zarr')
 GROUP BY array_path
@@ -381,6 +420,17 @@ labels/0/3	22
 query IIIII
 SELECT *
 FROM zarr_cells('test/data/idr0062A/6001240_labels.zarr', '0')
+LIMIT 5;
+----
+0	0	0	0	8
+0	0	0	1	9
+0	0	0	2	8
+0	0	0	3	10
+0	0	0	4	8
+
+query IIIII
+SELECT *
+FROM ome_arrow('test/data/idr0062A/6001240_labels.zarr', '0')
 LIMIT 5;
 ----
 0	0	0	0	8

@@ -15,9 +15,11 @@
 #include "zstd.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <limits>
 #include <tuple>
+#include <unordered_set>
 
 namespace duckdb {
 
@@ -70,6 +72,7 @@ struct ZarrArrayEntry {
 	string inner_compressor;
 	string index_codecs;
 	string index_location;
+	vector<string> dimension_names;
 };
 
 struct ZarrChunkEntry {
@@ -273,6 +276,27 @@ static vector<int64_t> RequireInt64Array(yyjson_val *obj, const char *key) {
 	return result;
 }
 
+static vector<string> OptionalStringArray(yyjson_val *obj, const char *key) {
+	auto value = yyjson_obj_get(obj, key);
+	if (!value || yyjson_is_null(value)) {
+		return {};
+	}
+	if (!yyjson_is_arr(value)) {
+		throw InvalidInputException("Zarr metadata key \"%s\" is not an array", key);
+	}
+	vector<string> result;
+	result.reserve(unsafe_yyjson_get_len(value));
+	yyjson_val *element;
+	yyjson_arr_iter iter = yyjson_arr_iter_with(value);
+	while ((element = yyjson_arr_iter_next(&iter))) {
+		if (!yyjson_is_str(element)) {
+			throw InvalidInputException("Zarr metadata key \"%s\" contains a non-string array element", key);
+		}
+		result.emplace_back(unsafe_yyjson_get_str(element), unsafe_yyjson_get_len(element));
+	}
+	return result;
+}
+
 static yyjson_val *RequireObject(yyjson_val *obj, const char *key) {
 	auto value = RequireObjectKey(obj, key);
 	if (!yyjson_is_obj(value)) {
@@ -320,6 +344,63 @@ static string NormalizeStorePath(FileSystem &fs, const string &path) {
 		return path;
 	}
 	return fs.ExpandPath(path);
+}
+
+static vector<string> NormalizeDimensionNames(const vector<string> &dimension_names, idx_t rank) {
+	if (dimension_names.empty()) {
+		return {};
+	}
+	if (dimension_names.size() != rank) {
+		throw InvalidInputException("Zarr v3 dimension_names rank does not match array rank");
+	}
+	vector<string> result;
+	result.reserve(rank);
+	std::unordered_set<string> seen;
+	for (idx_t i = 0; i < rank; i++) {
+		auto name = dimension_names[i];
+		StringUtil::Trim(name);
+		name = StringUtil::Lower(name);
+		if (name.empty()) {
+			throw InvalidInputException("Zarr v3 dimension_names cannot contain empty names");
+		}
+		for (auto &ch : name) {
+			if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '_')) {
+				ch = '_';
+			}
+		}
+		if (std::isdigit(static_cast<unsigned char>(name[0]))) {
+			name = "dim_" + name;
+		}
+		if (name.empty()) {
+			name = "dim_" + std::to_string(i);
+		}
+		if (!seen.insert(name).second) {
+			throw InvalidInputException("Zarr v3 dimension_names must be unique");
+		}
+		result.push_back(std::move(name));
+	}
+	return result;
+}
+
+static vector<string> GetOutputDimensionNames(const ZarrArrayEntry &array) {
+	if (!array.dimension_names.empty()) {
+		return array.dimension_names;
+	}
+	vector<string> names;
+	names.reserve(NumericCast<idx_t>(array.rank));
+	for (idx_t dim = 0; dim < NumericCast<idx_t>(array.rank); dim++) {
+		names.push_back("dim_" + std::to_string(dim));
+	}
+	return names;
+}
+
+static vector<Value> ToVarcharValues(const vector<string> &values) {
+	vector<Value> result;
+	result.reserve(values.size());
+	for (auto &value : values) {
+		result.emplace_back(Value(value));
+	}
+	return result;
 }
 
 static ZarrVersionOverride ParseZarrVersionOverride(const Value &value, const string &function_name) {
@@ -1599,6 +1680,7 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 		throw InvalidInputException("Expected a Zarr v3 array metadata document at %s", metadata_path);
 	}
 	auto shape = RequireInt64Array(root, "shape");
+	auto dimension_names = NormalizeDimensionNames(OptionalStringArray(root, "dimension_names"), shape.size());
 	auto chunk_grid = RequireObject(root, "chunk_grid");
 	auto chunk_grid_name = GetExtensionName(chunk_grid, metadata_path, "chunk_grid");
 	if (chunk_grid_name != "regular") {
@@ -1653,13 +1735,15 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 			bool little_endian = HostIsLittleEndian();
 			ParseV3ShardingCodec(first_codec, metadata_path, chunks, compressor, supports_cells, cells_error,
 			                     inner_chunks, inner_compressor, index_codecs, index_location, little_endian);
-			return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
-			                      std::move(shape), std::move(chunks),
-			                      ParseV3DataType(root, metadata_path, little_endian), "C", std::move(compressor),
-			                      JsonToString(yyjson_obj_get(root, "fill_value")), std::move(chunk_key_encoding_name),
-			                      std::move(dimension_separator), metadata_path, supports_cells, std::move(cells_error),
-			                      true, {}, std::move(inner_chunks), std::move(inner_compressor),
-			                      std::move(index_codecs), std::move(index_location));
+			auto entry = MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
+			                           std::move(shape), std::move(chunks),
+			                           ParseV3DataType(root, metadata_path, little_endian), "C",
+			                           std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
+			                           std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+			                           supports_cells, std::move(cells_error), true, {}, std::move(inner_chunks),
+			                           std::move(inner_compressor), std::move(index_codecs), std::move(index_location));
+			entry.dimension_names = std::move(dimension_names);
+			return entry;
 		}
 	}
 	bool saw_bytes = false;
@@ -1756,11 +1840,14 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 		cells_error = "zarr_cells does not yet support the Zarr v3 codec pipeline for this array";
 	}
 
-	return MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()), std::move(shape),
-	                      std::move(chunks), ParseV3DataType(root, metadata_path, little_endian), std::move(order),
-	                      std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
-	                      std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
-	                      supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
+	auto entry = MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
+	                           std::move(shape), std::move(chunks),
+	                           ParseV3DataType(root, metadata_path, little_endian), std::move(order),
+	                           std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
+	                           std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+	                           supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
+	entry.dimension_names = std::move(dimension_names);
+	return entry;
 }
 
 static string MetadataPathForKey(const string &store_path, const string &key) {
@@ -2130,6 +2217,27 @@ static unique_ptr<FunctionData> BindArraysInternal(ClientContext &context, const
 	return make_uniq<ZarrBindData<ZarrArrayEntry>>(std::move(arrays));
 }
 
+static unique_ptr<FunctionData> BindOmeArrowArraysInternal(ClientContext &context, const string &store_path,
+                                                           vector<LogicalType> &return_types,
+                                                           vector<string> &names) {
+	vector<ZarrGroupEntry> groups;
+	vector<ZarrArrayEntry> arrays;
+	vector<ZarrChunkEntry> chunks;
+	DiscoverStore(context, store_path, groups, arrays, chunks, false, ZarrVersionOverride::V3);
+	names = {"store_path", "array_path", "zarr_format", "rank", "shape",
+	         "chunk_shape", "dtype",      "dimension_names", "metadata_path"};
+	return_types = {LogicalType::VARCHAR,
+	                LogicalType::VARCHAR,
+	                LogicalType::BIGINT,
+	                LogicalType::BIGINT,
+	                LogicalType::LIST(LogicalType::BIGINT),
+	                LogicalType::LIST(LogicalType::BIGINT),
+	                LogicalType::VARCHAR,
+	                LogicalType::LIST(LogicalType::VARCHAR),
+	                LogicalType::VARCHAR};
+	return make_uniq<ZarrBindData<ZarrArrayEntry>>(std::move(arrays));
+}
+
 static unique_ptr<FunctionData> BindArrays(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.empty() || input.inputs[0].IsNull()) {
@@ -2200,6 +2308,44 @@ static unique_ptr<FunctionData> BindCellsInternal(ClientContext &context, const 
 	return make_uniq<ZarrCellsBindData>(cell_array, std::move(chunks));
 }
 
+static unique_ptr<FunctionData> BindCellsWithDimensionNamesInternal(ClientContext &context, const string &store_path,
+                                                                    const string &array_path,
+                                                                    ZarrVersionOverride version_override,
+                                                                    vector<LogicalType> &return_types,
+                                                                    vector<string> &names) {
+	if (version_override == ZarrVersionOverride::V2) {
+		throw BinderException("ome_arrow only supports Zarr v3 stores");
+	}
+	vector<ZarrGroupEntry> groups;
+	vector<ZarrArrayEntry> arrays;
+	vector<ZarrChunkEntry> chunks;
+	DiscoverStore(context, store_path, groups, arrays, chunks, false, ZarrVersionOverride::V3);
+	auto &array = FindArrayEntry(arrays, array_path);
+	if (!array.supports_cells) {
+		throw InvalidInputException("%s: %s", array.cells_error, array.array_path);
+	}
+	auto cell_array = array;
+	auto dtype = ParseNumericDType(array.dtype);
+	chunks = cell_array.is_sharding_indexed
+	             ? GenerateCellChunkEntries(FileSystem::GetFileSystem(context), array.store_path, array,
+	                                        HasMaterializedFillValue(array))
+	             : GenerateChunkEntries(FileSystem::GetFileSystem(context), cell_array.store_path, cell_array,
+	                                    HasMaterializedFillValue(cell_array));
+	if (cell_array.is_sharding_indexed) {
+		cell_array.storage_chunks = cell_array.chunks;
+		cell_array.chunks = cell_array.inner_chunks;
+	}
+
+	names = GetOutputDimensionNames(cell_array);
+	return_types.reserve(cell_array.rank + 1);
+	for (idx_t dim = 0; dim < NumericCast<idx_t>(cell_array.rank); dim++) {
+		return_types.push_back(LogicalType::BIGINT);
+	}
+	names.push_back("value");
+	return_types.push_back(dtype.logical_type);
+	return make_uniq<ZarrCellsBindData>(cell_array, std::move(chunks));
+}
+
 static unique_ptr<FunctionData> BindCells(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.size() < 2 || input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
@@ -2219,6 +2365,26 @@ static unique_ptr<FunctionData> BindZarr(ClientContext &context, TableFunctionBi
 	}
 	return BindArraysInternal(context, StringValue::Get(input.inputs[0]), ZarrVersionOverride::AUTO, return_types,
 	                          names);
+}
+
+static unique_ptr<FunctionData> BindOmeArrow(ClientContext &context, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.empty() || input.inputs[0].IsNull()) {
+		throw BinderException("ome_arrow requires a non-NULL store path");
+	}
+	return BindOmeArrowArraysInternal(context, StringValue::Get(input.inputs[0]), return_types, names);
+}
+
+static unique_ptr<FunctionData> BindOmeArrowCells(ClientContext &context, TableFunctionBindInput &input,
+                                                  vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() < 2 || input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
+		throw BinderException("ome_arrow requires a non-NULL store path and array path");
+	}
+	auto version_override =
+	    input.inputs.size() > 2 ? ParseZarrVersionOverride(input.inputs[2], "ome_arrow") : ZarrVersionOverride::V3;
+	return BindCellsWithDimensionNamesInternal(context, StringValue::Get(input.inputs[0]),
+	                                           NormalizeArrayPath(StringValue::Get(input.inputs[1])),
+	                                           version_override, return_types, names);
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
@@ -2254,6 +2420,26 @@ static void ScanArrays(ClientContext &, TableFunctionInput &data_p, DataChunk &o
 		output.SetValue(9, count, Value(entry.chunk_key_encoding));
 		output.SetValue(10, count, Value(entry.dimension_separator));
 		output.SetValue(11, count, Value(entry.metadata_path));
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
+static void ScanOmeArrowArrays(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
+	auto &state = data_p.global_state->Cast<ZarrGlobalState>();
+	auto &entries = data_p.bind_data->Cast<ZarrBindData<ZarrArrayEntry>>().entries;
+	idx_t count = 0;
+	while (state.offset < entries.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &entry = entries[state.offset++];
+		output.SetValue(0, count, Value(entry.store_path));
+		output.SetValue(1, count, Value(entry.array_path));
+		output.SetValue(2, count, Value::BIGINT(entry.zarr_format));
+		output.SetValue(3, count, Value::BIGINT(NumericCast<int64_t>(entry.shape.size())));
+		output.SetValue(4, count, Value::LIST(LogicalType::BIGINT, ToBigIntValues(entry.shape)));
+		output.SetValue(5, count, Value::LIST(LogicalType::BIGINT, ToBigIntValues(entry.chunks)));
+		output.SetValue(6, count, Value(entry.dtype));
+		output.SetValue(7, count, Value::LIST(LogicalType::VARCHAR, ToVarcharValues(GetOutputDimensionNames(entry))));
+		output.SetValue(8, count, Value(entry.metadata_path));
 		count++;
 	}
 	output.SetCardinality(count);
@@ -2387,6 +2573,24 @@ TableFunctionSet ZarrMetadata::GetZarrCellsAliasFunction() {
 	set.AddFunction(base);
 	TableFunction with_override("zarr", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, ScanCells,
 	                            BindCells, InitCells);
+	with_override.projection_pushdown = true;
+	with_override.filter_pushdown = true;
+	with_override.filter_prune = true;
+	set.AddFunction(with_override);
+	return set;
+}
+
+TableFunctionSet ZarrMetadata::GetOmeArrowFunction() {
+	TableFunctionSet set("ome_arrow");
+	set.AddFunction(TableFunction("ome_arrow", {LogicalType::VARCHAR}, ScanOmeArrowArrays, BindOmeArrow, ZarrInit));
+	TableFunction base("ome_arrow", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ScanCells, BindOmeArrowCells,
+	                   InitCells);
+	base.projection_pushdown = true;
+	base.filter_pushdown = true;
+	base.filter_prune = true;
+	set.AddFunction(base);
+	TableFunction with_override("ome_arrow", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                            ScanCells, BindOmeArrowCells, InitCells);
 	with_override.projection_pushdown = true;
 	with_override.filter_pushdown = true;
 	with_override.filter_prune = true;

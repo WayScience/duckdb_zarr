@@ -28,5 +28,5 @@
 
 ## [ ] Phase 5: Advanced
 - [ ] chunk_values
-- [ ] convention adapters
+- [~] convention adapters (`ome_arrow(...)` compatibility layer added for Zarr v3)
 - [ ] parallel decode

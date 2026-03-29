@@ -126,6 +126,17 @@ def main() -> None:
     print("\nV3 temperature cells:")
     print(v3_temperature)
 
+    ome_arrow_temperature = con.execute(
+        """
+        SELECT *
+        FROM ome_arrow(?, 'temperature_v3')
+        ORDER BY y, x
+        """,
+        [FIXTURE_V3_PATH.as_posix()],
+    ).fetchdf()
+    print("\nOME-Arrow-compatible V3 temperature cells:")
+    print(ome_arrow_temperature)
+
     if IDR_FIXTURE_PATH.exists():
         idr_overview = con.execute(
             """
@@ -183,6 +194,7 @@ def main() -> None:
     assert v3_overview["array_path"].tolist() == ["fortran_v3", "mask_v3", "temperature_v3"]
     assert v3_overview["zarr_format"].tolist() == [3, 3, 3]
     assert np.isclose(v3_temperature["value"].to_numpy(dtype=np.float64).sum(), 21.0)
+    assert list(ome_arrow_temperature.columns) == ["y", "x", "value"]
 
     print("\nPython smoke test passed.")
 

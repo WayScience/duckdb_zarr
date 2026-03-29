@@ -8,6 +8,7 @@ The current suite covers the metadata and `zarr_cells` slices:
 - `zarr_arrays(path)`
 - `zarr_chunks(path)`
 - `zarr_cells(path, array_path)`
+- `ome_arrow(path)` and `ome_arrow(path, array_path)` for the Zarr v3 compatibility layer
 - `test/python_smoke.py` for a Python-side smoke example using DuckDB 1.5.0
 - real OME-Zarr v3 sharded/Blosc cell scans against `test/data/idr0062A/6001240_labels.zarr`
 

@@ -13,6 +13,7 @@ public:
 	static TableFunctionSet GetCellsFunction();
 	static TableFunctionSet GetZarrFunction();
 	static TableFunctionSet GetZarrCellsAliasFunction();
+	static TableFunctionSet GetOmeArrowFunction();
 };
 
 } // namespace duckdb
