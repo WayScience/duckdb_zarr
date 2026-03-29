@@ -276,10 +276,10 @@ static vector<int64_t> RequireInt64Array(yyjson_val *obj, const char *key) {
 	return result;
 }
 
-static vector<string> OptionalStringArray(yyjson_val *obj, const char *key) {
+static pair<bool, vector<string>> OptionalStringArray(yyjson_val *obj, const char *key) {
 	auto value = yyjson_obj_get(obj, key);
 	if (!value || yyjson_is_null(value)) {
-		return {};
+		return {false, {}};
 	}
 	if (!yyjson_is_arr(value)) {
 		throw InvalidInputException("Zarr metadata key \"%s\" is not an array", key);
@@ -294,7 +294,7 @@ static vector<string> OptionalStringArray(yyjson_val *obj, const char *key) {
 		}
 		result.emplace_back(unsafe_yyjson_get_str(element), unsafe_yyjson_get_len(element));
 	}
-	return result;
+	return {true, std::move(result)};
 }
 
 static yyjson_val *RequireObject(yyjson_val *obj, const char *key) {
@@ -346,18 +346,18 @@ static string NormalizeStorePath(FileSystem &fs, const string &path) {
 	return fs.ExpandPath(path);
 }
 
-static vector<string> NormalizeDimensionNames(const vector<string> &dimension_names, idx_t rank) {
-	if (dimension_names.empty()) {
+static vector<string> NormalizeDimensionNames(const pair<bool, vector<string>> &dimension_names, idx_t rank) {
+	if (!dimension_names.first) {
 		return {};
 	}
-	if (dimension_names.size() != rank) {
+	if (dimension_names.second.size() != rank) {
 		throw InvalidInputException("Zarr v3 dimension_names rank does not match array rank");
 	}
 	vector<string> result;
 	result.reserve(rank);
 	std::unordered_set<string> seen;
 	for (idx_t i = 0; i < rank; i++) {
-		auto name = dimension_names[i];
+		auto name = dimension_names.second[i];
 		StringUtil::Trim(name);
 		name = StringUtil::Lower(name);
 		if (name.empty()) {
@@ -380,6 +380,15 @@ static vector<string> NormalizeDimensionNames(const vector<string> &dimension_na
 		result.push_back(std::move(name));
 	}
 	return result;
+}
+
+static string UniqueValueColumnName(const vector<string> &names) {
+	string candidate = "value";
+	idx_t suffix = 1;
+	while (std::find(names.begin(), names.end(), candidate) != names.end()) {
+		candidate = "value_" + std::to_string(suffix++);
+	}
+	return candidate;
 }
 
 static vector<string> GetOutputDimensionNames(const ZarrArrayEntry &array) {
@@ -1735,13 +1744,13 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 			bool little_endian = HostIsLittleEndian();
 			ParseV3ShardingCodec(first_codec, metadata_path, chunks, compressor, supports_cells, cells_error,
 			                     inner_chunks, inner_compressor, index_codecs, index_location, little_endian);
-			auto entry = MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
-			                           std::move(shape), std::move(chunks),
-			                           ParseV3DataType(root, metadata_path, little_endian), "C",
-			                           std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
-			                           std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
-			                           supports_cells, std::move(cells_error), true, {}, std::move(inner_chunks),
-			                           std::move(inner_compressor), std::move(index_codecs), std::move(index_location));
+			auto entry =
+			    MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
+			                   std::move(shape), std::move(chunks), ParseV3DataType(root, metadata_path, little_endian),
+			                   "C", std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
+			                   std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+			                   supports_cells, std::move(cells_error), true, {}, std::move(inner_chunks),
+			                   std::move(inner_compressor), std::move(index_codecs), std::move(index_location));
 			entry.dimension_names = std::move(dimension_names);
 			return entry;
 		}
@@ -1840,12 +1849,12 @@ static ZarrArrayEntry ParseArrayMetadataObjectV3(yyjson_val *root, const string 
 		cells_error = "zarr_cells does not yet support the Zarr v3 codec pipeline for this array";
 	}
 
-	auto entry = MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()),
-	                           std::move(shape), std::move(chunks),
-	                           ParseV3DataType(root, metadata_path, little_endian), std::move(order),
-	                           std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
-	                           std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
-	                           supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
+	auto entry =
+	    MakeArrayEntry(store_path, relative_path, zarr_format, NumericCast<int64_t>(shape.size()), std::move(shape),
+	                   std::move(chunks), ParseV3DataType(root, metadata_path, little_endian), std::move(order),
+	                   std::move(compressor), JsonToString(yyjson_obj_get(root, "fill_value")),
+	                   std::move(chunk_key_encoding_name), std::move(dimension_separator), metadata_path,
+	                   supports_cells, std::move(cells_error), false, {}, {}, "", "", "");
 	entry.dimension_names = std::move(dimension_names);
 	return entry;
 }
@@ -2218,13 +2227,12 @@ static unique_ptr<FunctionData> BindArraysInternal(ClientContext &context, const
 }
 
 static unique_ptr<FunctionData> BindOmeArrowArraysInternal(ClientContext &context, const string &store_path,
-                                                           vector<LogicalType> &return_types,
-                                                           vector<string> &names) {
+                                                           vector<LogicalType> &return_types, vector<string> &names) {
 	vector<ZarrGroupEntry> groups;
 	vector<ZarrArrayEntry> arrays;
 	vector<ZarrChunkEntry> chunks;
 	DiscoverStore(context, store_path, groups, arrays, chunks, false, ZarrVersionOverride::V3);
-	names = {"store_path", "array_path", "zarr_format", "rank", "shape",
+	names = {"store_path",  "array_path", "zarr_format",     "rank",         "shape",
 	         "chunk_shape", "dtype",      "dimension_names", "metadata_path"};
 	return_types = {LogicalType::VARCHAR,
 	                LogicalType::VARCHAR,
@@ -2341,7 +2349,7 @@ static unique_ptr<FunctionData> BindCellsWithDimensionNamesInternal(ClientContex
 	for (idx_t dim = 0; dim < NumericCast<idx_t>(cell_array.rank); dim++) {
 		return_types.push_back(LogicalType::BIGINT);
 	}
-	names.push_back("value");
+	names.push_back(UniqueValueColumnName(names));
 	return_types.push_back(dtype.logical_type);
 	return make_uniq<ZarrCellsBindData>(cell_array, std::move(chunks));
 }
@@ -2383,8 +2391,8 @@ static unique_ptr<FunctionData> BindOmeArrowCells(ClientContext &context, TableF
 	auto version_override =
 	    input.inputs.size() > 2 ? ParseZarrVersionOverride(input.inputs[2], "ome_arrow") : ZarrVersionOverride::V3;
 	return BindCellsWithDimensionNamesInternal(context, StringValue::Get(input.inputs[0]),
-	                                           NormalizeArrayPath(StringValue::Get(input.inputs[1])),
-	                                           version_override, return_types, names);
+	                                           NormalizeArrayPath(StringValue::Get(input.inputs[1])), version_override,
+	                                           return_types, names);
 }
 
 static void ScanGroups(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
