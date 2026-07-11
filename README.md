@@ -1,5 +1,9 @@
 # duckdb_zarr
 
+> **Archive notice:** Ongoing development for DuckDB Zarr support is moving to
+> [`xqlsystems/duckdb-zarr`](https://github.com/xqlsystems/duckdb-zarr).
+> This repository will be archived and kept for historical reference.
+
 `duckdb_zarr` is a DuckDB extension for exploring Zarr stores with SQL through a relational projection.
 
 The current implementation follows the project documents conservatively:
